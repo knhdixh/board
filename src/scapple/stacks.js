@@ -5,7 +5,7 @@ import { rerouteBound } from "./connect.js";
 const ALIGN = 3; // left edges this close count as one column
 const GAP = 16; // a note this close under another is part of its stack
 
-const stackable = (el) => isNote(el) && !el.customData?.background && el.type !== "image";
+const stackable = (el) => isNote(el) && !el.customData?.background && !el.customData?.table && el.type !== "image"; // tables line themselves up
 
 /** Where every note is, so the next change can be compared against it. */
 export function boxesOf(elements) {

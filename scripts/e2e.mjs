@@ -436,6 +436,100 @@ try {
   check("Esc closes the palette", await until(`!document.querySelector(".pal")`, 1000));
   await js(`window.__board.updateScene({ appState: { gridModeEnabled: ${gridBefore}, selectedElementIds: {} } })`);
 
+  // Tables: one on the canvas from the palette, filled in with Tab; one typed into a note
+  await js(`window.__board.updateScene({ appState: { scrollX: -4000, scrollY: 0 } })`);
+  await palette();
+  await type("table");
+  await sleep(100);
+  check("palette offers a table", (await js(`document.querySelector(".pal-item.on .pal-label")?.textContent`)) === "Table");
+  await key("Enter");
+  check("table starts with its first cell open", await until(`window.__board.getAppState().editingTextElement?.containerId && window.__board.getSceneElements().find(e => e.id === window.__board.getAppState().editingTextElement.containerId)?.customData?.table`, 3000));
+  const tab = async (shift) => {
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: shift ? 8 : 0 });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+    await sleep(250);
+  };
+  const words = ["Name", "Age", "City", "Ann", "31", "Oulu", "Bo", "a much longer cell that wraps", "Turku", "Cy"];
+  for (const [i, w] of words.entries()) {
+    await type(w);
+    if (i < words.length - 1) await tab();
+  }
+  await key("Escape");
+  await sleep(800);
+  const tableScene = await scene();
+  const tableCells = tableScene.filter((e) => e.customData?.table);
+  const cellText = (r, c) => {
+    const cell = tableCells.find((e) => e.customData.row === r && e.customData.col === c);
+    return cell && tableScene.find((t) => t.containerId === cell.id)?.originalText;
+  };
+  check("Tab fills the cells in order", cellText(0, 0) === "Name" && cellText(1, 2) === "Oulu" && cellText(2, 1) === "a much longer cell that wraps");
+  check("Tab in the last cell adds a row", tableCells.length === 12 && cellText(3, 0) === "Cy", `${tableCells.length} cells`);
+  const rowOf = (r) => tableCells.filter((e) => e.customData.row === r);
+  check("a tall cell makes its row tall", new Set(rowOf(2).map((e) => e.height)).size === 1 && rowOf(2)[0].height > 40, rowOf(2).map((e) => Math.round(e.height)).join(","));
+  check("rows stay edge to edge", Math.abs(rowOf(3)[0].y - (rowOf(2)[0].y + rowOf(2)[0].height)) < 1);
+  check("a table counts as one note", /^\d+ notes$/.test(await js(`document.querySelector(".note-count").textContent`)));
+  const look = async (filter) => {
+    await js(`window.__board.scrollToContent(window.__board.getSceneElements().filter(${filter}), { fitToViewport: true, viewportZoomFactor: 0.5 })`);
+    await sleep(400);
+  };
+  await look(`(e) => e.customData?.table || e.containerId`);
+  await shot("board-table.png");
+
+  // Add a column from the note bar
+  const anyCell = rowOf(0)[0];
+  await js(`window.__board.updateScene({ appState: { selectedElementIds: { ${JSON.stringify(anyCell.id)}: true }, editingGroupId: ${JSON.stringify(anyCell.groupIds[0])} } })`);
+  check("note bar shows table buttons", await until(`[...document.querySelectorAll(".notebar button")].some(b => b.textContent === "+ Column")`, 2000));
+  await js(`[...document.querySelectorAll(".notebar button")].find(b => b.textContent === "+ Column").click()`);
+  await sleep(500);
+  const wider = (await scene()).filter((e) => e.customData?.table);
+  check("+ Column adds a cell to every row", wider.length === 16 && new Set(wider.filter((e) => e.customData.col === 1).map((e) => e.x)).size === 1);
+
+  await look(`(e) => e.customData?.table`);
+  await shot("board-table-wider.png");
+
+  // A table typed in a note lines up in a monospace font
+  await js(`window.__board.updateScene({ appState: { selectedElementIds: {}, editingGroupId: null, scrollX: -4000, scrollY: -1200 } })`);
+  await dblclick(300, 400);
+  await sleep(300);
+  await send("Input.insertText", { text: "Plan\nName|Age\nAnn|31" });
+  await key("Escape");
+  await sleep(800);
+  const tnote = (await texts()).find((x) => x.originalText?.startsWith("Plan"));
+  check("a text table lines up", tnote?.originalText === "Plan\n| Name | Age |\n|------|-----|\n| Ann  | 31  |", JSON.stringify(tnote?.originalText));
+  check("in a monospace font, without wrapping", tnote?.fontFamily === 3 && tnote.text === tnote.originalText);
+  await sleep(500);
+  const measured = (await texts()).find((x) => x.originalText?.startsWith("Plan"));
+  check("the note is as wide as its table", measured.width >= 15 * 16 * 0.5, `${Math.round(measured.width)}px`);
+  // Lists: Enter continues bullets and numbers, Enter on an empty item ends the list, ⇧Enter is a plain line
+  await js(`window.__board.updateScene({ appState: { selectedElementIds: {}, scrollX: -4000, scrollY: -2400 } })`);
+  await dblclick(300, 400);
+  await sleep(300);
+  const enterKey = async (modifiers = 0) => {
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", modifiers });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers });
+    await sleep(80);
+  };
+  await type("Todo");
+  await enterKey();
+  await type("- milk");
+  await enterKey();
+  await type("eggs");
+  await enterKey();
+  await enterKey(); // empty item: drops the marker, so you carry on writing on that line
+  await type("1. first");
+  await enterKey();
+  await type("second");
+  await enterKey(8); // ⇧Enter
+  await type("more");
+  await key("Escape");
+  await sleep(600);
+  const list = (await texts()).find((x) => x.originalText?.startsWith("Todo"));
+  check("Enter continues lists", list?.originalText === "Todo\n- milk\n- eggs\n1. first\n2. second\nmore", JSON.stringify(list?.originalText));
+
+  await look(`(e) => e.originalText?.startsWith("Plan")`);
+  await shot("board-text-table.png");
+  await js(`window.__board.updateScene({ appState: { scrollX: 0, scrollY: 0, selectedElementIds: {} } })`);
+
   // Drop an image onto the board: it lands where it was dropped and goes up to Storage
   await js(`(async () => {
     const c = Object.assign(document.createElement("canvas"), { width: 120, height: 80 });

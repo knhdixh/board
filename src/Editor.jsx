@@ -16,9 +16,11 @@ import NotesPanel from "./NotesPanel.jsx";
 import { toast } from "./toast.jsx";
 import {
   FONT,
+  PAD,
   boundTextOf,
   byId,
   isNote,
+  newText,
   noteFor,
   touch,
 } from "./scapple/elements.js";
@@ -32,6 +34,20 @@ import { openPalette, provideCommands } from "./commands.js";
 import { outline, selectionOutline } from "./scapple/outline.js";
 import { addBackground, carry, contentsOf, isBackground } from "./scapple/background.js";
 import { exportScapple } from "./scapple/scap.js";
+import { enterInList } from "./scapple/lists.js";
+import {
+  addColumn,
+  addRow,
+  blankTextTable,
+  cellFor,
+  isCell,
+  monoWidth,
+  newTable,
+  nextCell,
+  relayoutTables,
+  removeLine,
+  tidyTextTable,
+} from "./scapple/table.js";
 
 // Scapple-like defaults: clean lines, a plain font, straight connectors.
 const DEFAULTS = {
@@ -44,6 +60,7 @@ const DEFAULTS = {
   ...themeAppState(DEFAULT_THEME),
 };
 const QUICK = new Set(["plain", "bubble", "dashed", "yellow", "blue", "green", "red"]); // in the note bar
+const MONO_FAMILY = "Cascadia"; // the font Excalidraw registers for text tables (see MONO)
 const WRAP = 320; // free text wraps at this width once you stop typing, like a Scapple note
 const UI = {
   canvasActions: {
@@ -109,7 +126,7 @@ function Canvas({ board, store, navigate, signOut }) {
   const [api, setApi] = useState(null);
   const [title, setTitle] = useState(board.title);
   const [status, setStatus] = useState("saved"); // saved | saving | offline | conflict
-  const [selection, setSelection] = useState({ notes: 0, ids: [] });
+  const [selection, setSelection] = useState({ notes: 0, ids: [], cell: null });
   const dropBox = useRef(null); // outline around the note you'd connect to
   const preview = useRef(null); // dashed line from the dragged note to that note
   const [theme, setTheme] = useState(() => themeFor(board.scene?.appState?.viewBackgroundColor ?? DEFAULT_THEME.bg));
@@ -291,6 +308,14 @@ function Canvas({ board, store, navigate, signOut }) {
     [api],
   );
 
+  // Line tables up; when a column changed width its text re-wraps, which can make rows taller, so go again.
+  const settleTables = (all) => {
+    let r = relayoutTables(all);
+    for (let i = 0; i < 3 && r.measure; i++)
+      r = relayoutTables(restoreElements(r.elements, null, { repairBindings: true, refreshDimensions: true }));
+    return r.elements;
+  };
+
   const selectedIds = () =>
     Object.keys(api.getAppState().selectedElementIds).filter(
       (k) => api.getAppState().selectedElementIds[k],
@@ -317,11 +342,19 @@ function Canvas({ board, store, navigate, signOut }) {
 
   const finishNote = (id, fresh, from) => {
     let all = api.getSceneElementsIncludingDeleted();
-    const el = all.find((e) => e.id === id);
+    let el = all.find((e) => e.id === id);
     if (!el || el.isDeleted || el.type !== "text") return;
     let measure = false;
     let changed = false;
-    if (!el.containerId && el.autoResize !== false && el.width > WRAP) {
+    // "a | b" rows: line them up in a monospace font, and give the note room so they don't wrap.
+    const tidy = tidyTextTable(el);
+    if (tidy) {
+      el = touch(el, tidy.customData.textTable && !el.containerId ? { ...tidy, autoResize: true } : tidy);
+      all = all.map((e) => (e.id === id ? el : e));
+      if (tidy.customData.textTable) all = roomForTable(all, el);
+      measure = changed = true;
+    }
+    if (!el.containerId && el.autoResize !== false && el.width > WRAP && !el.customData?.textTable) {
       all = all.map((e) => (e.id === id ? touch(e, { autoResize: false, width: WRAP }) : e));
       measure = changed = true;
     }
@@ -342,6 +375,29 @@ function Canvas({ board, store, navigate, signOut }) {
       toast("Connected");
     }
     if (changed) commit(all, { measure });
+    if (tidy) remeasureMono();
+  };
+
+  // Text tables use a font that loads on first use; measured before it arrives, the note comes out too narrow.
+  const remeasureMono = () =>
+    document.fonts
+      .load(`16px ${MONO_FAMILY}`)
+      .then((loaded) => {
+        if (!loaded.length) return;
+        const all = api.getSceneElementsIncludingDeleted();
+        const els = restoreElements(all, null, { repairBindings: true, refreshDimensions: true });
+        api.updateScene({ elements: fitContainers(els), captureUpdate: CaptureUpdateAction.EVENTUALLY });
+      })
+      .catch(() => {});
+  useEffect(() => {
+    document.fonts?.load(`16px ${MONO_FAMILY}`).catch(() => {});
+  }, []);
+
+  // A shape whose text is a table gets wide enough for it (text in a shape wraps to the shape).
+  const roomForTable = (all, text) => {
+    if (!text.containerId || isCell(byId(all).get(text.containerId))) return all;
+    const need = monoWidth(text.originalText, text.fontSize) + PAD * 2 + 10;
+    return all.map((e) => (e.id === text.containerId && e.width < need ? touch(e, { width: need }) : e));
   };
 
   // ⌘-double-click: the new note gets connected to the note(s) you had selected.
@@ -405,9 +461,20 @@ function Canvas({ board, store, navigate, signOut }) {
       }
       boxes.current = boxesOf(elements);
 
+      // Tables: a cell grew or was resized, so its row and column follow.
+      if (!appState.selectedElementsAreBeingDragged && !appState.resizingElement && !appState.editingTextElement && relayoutTables(elements).elements !== elements)
+        setTimeout(() => {
+          const all = api.getSceneElementsIncludingDeleted();
+          const next = settleTables(all);
+          if (next !== all) api.updateScene({ elements: next, captureUpdate: CaptureUpdateAction.EVENTUALLY });
+        });
+
       let count = 0;
-      for (const el of elements) if (isNote(el) && !el.customData?.background) count++;
-      setNoteCount(count);
+      const tables = new Set();
+      for (const el of elements)
+        if (isCell(el)) tables.add(el.customData.table);
+        else if (isNote(el) && !el.customData?.background) count++;
+      setNoteCount(count + tables.size);
 
       // A note just finished editing: wrap long text, connect it if it was ⌘-double-clicked,
       // and give brand-new notes your default style.
@@ -440,7 +507,8 @@ function Canvas({ board, store, navigate, signOut }) {
                 .filter(isNote)
                 .map((n) => n.id),
             ).size;
-        setSelection({ notes, ids });
+        const cells = editingId ? [] : [...new Set(ids.map((i) => cellFor(map.get(i), map)?.id).filter(Boolean))];
+        setSelection({ notes, ids, cell: cells.length === 1 ? cells[0] : null });
         if (notes) lastNotes.current = { ids, at: 0 };
         else if (lastNotes.current && !lastNotes.current.at) lastNotes.current.at = Date.now();
       }
@@ -684,6 +752,116 @@ function Canvas({ board, store, navigate, signOut }) {
     toast("Disconnected");
   };
 
+  /* ---------- tables ---------- */
+  const center = () => {
+    const st = api.getAppState();
+    return viewportCoordsToSceneCoords({ clientX: st.offsetLeft + st.width / 2, clientY: st.offsetTop + st.height / 2 }, st);
+  };
+  const select = (id, editingGroupId) => api.updateScene({ appState: { selectedElementIds: { [id]: true }, editingGroupId, selectedGroupIds: {} } });
+  // Start writing in a cell, as if you had pressed Enter on it.
+  const editCell = (id) => {
+    const cell = api.getSceneElements().find((e) => e.id === id);
+    if (!cell) return;
+    select(id, cell.groupIds.at(-1) ?? null);
+    setTimeout(() => document.querySelector(".excalidraw")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true })), 30);
+  };
+
+  const insertTable = (rows = 3, cols = 3) => {
+    const p = center();
+    const t = newTable(Math.round(p.x - (cols * 120) / 2), Math.round(p.y - (rows * 36) / 2), rows, cols, themeRef.current);
+    commit([...api.getSceneElementsIncludingDeleted(), ...t.elements]);
+    editCell(t.elements[0].id);
+    toast("Table added. Tab moves to the next cell");
+  };
+  const tableEdit = (fn, ...args) => {
+    const cell = selection.cell;
+    if (!cell) return;
+    const r = fn(api.getSceneElementsIncludingDeleted(), cell, ...args, themeRef.current);
+    commit(r.elements ?? r);
+    const live = api.getSceneElements();
+    const keep = r.id ?? (live.some((e) => e.id === cell) ? cell : null);
+    const el = keep && live.find((e) => e.id === keep);
+    if (el) select(keep, el.groupIds.at(-1) ?? null);
+  };
+
+  // A table typed into the selected note (or a new one in the middle of the screen).
+  const textTable = () => {
+    const all = api.getSceneElementsIncludingDeleted();
+    const map = byId(all);
+    const note = selection.notes === 1 && !selection.cell ? noteFor(map.get(selection.ids[0]), map) : null;
+    const text = note && (note.type === "text" ? note : boundTextOf(note, map));
+    if (!text) {
+      const p = center();
+      const blank = blankTextTable();
+      const el = newText({ x: p.x - 120, y: p.y - 40, text: blank, originalText: blank, strokeColor: themeRef.current.ink });
+      commit([...all, touch(el, tidyTextTable(el))], { measure: true });
+      remeasureMono();
+      return select(el.id, null);
+    }
+    const before = (text.originalText ?? text.text).trimEnd();
+    const body = (before ? before + "\n\n" : "") + blankTextTable();
+    let next = all.map((e) => (e.id === text.id ? touch(e, { text: body, originalText: body }) : e));
+    const t = byId(next).get(text.id);
+    next = next.map((e) => (e.id === t.id ? touch(e, { ...tidyTextTable(t), ...(t.containerId ? {} : { autoResize: true }) }) : e));
+    commit(roomForTable(next, byId(next).get(text.id)), { measure: true });
+    remeasureMono();
+  };
+
+  // Tab / ⇧Tab while writing in a cell moves to the next one; Tab in the last cell adds a row.
+  useEffect(() => {
+    if (!api) return;
+    const onKey = (e) => {
+      if (e.key !== "Tab" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const editingEl = api.getAppState().editingTextElement;
+      if (!editingEl) return;
+      const all = api.getSceneElements();
+      const map = byId(all);
+      const cell = cellFor(map.get(editingEl.id), map);
+      if (!cell) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.target.blur?.(); // finishes the edit; Excalidraw then selects the cell, so wait for that before moving on
+      const go = (tries = 0) => {
+        if (api.getAppState().editingTextElement && tries < 20) return setTimeout(() => go(tries + 1), 10);
+        const now = api.getSceneElementsIncludingDeleted();
+        let to = nextCell(now, cell.id, e.shiftKey ? -1 : 1);
+        if (!to && !e.shiftKey) {
+          commit(addRow(now, cell.id, true, themeRef.current).elements);
+          to = nextCell(api.getSceneElementsIncludingDeleted(), cell.id);
+        }
+        if (to) editCell(to.id);
+      };
+      setTimeout(go, 10);
+    };
+    addEventListener("keydown", onKey, true);
+    return () => removeEventListener("keydown", onKey, true);
+  }, [api, commit]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lists while writing a note: Enter continues "- " and "1. " items, Enter on an empty item ends the list.
+  // ⇧Enter is always a plain new line.
+  useEffect(() => {
+    const onKey = (e) => {
+      const ta = e.target;
+      if (e.key !== "Enter" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+      if (!(ta instanceof HTMLTextAreaElement) || !ta.classList.contains("excalidraw-wysiwyg")) return;
+      if (ta.selectionStart !== ta.selectionEnd) return;
+      const r = enterInList(ta.value, ta.selectionStart);
+      if (!r) return;
+      e.preventDefault();
+      e.stopPropagation();
+      ta.setSelectionRange(r.from, r.to);
+      // execCommand keeps the browser's own undo, and fires "input" so Excalidraw sees the new text.
+      const ok = r.insert ? document.execCommand("insertText", false, r.insert) : r.from === r.to || document.execCommand("delete");
+      if (!ok) {
+        ta.setRangeText(r.insert, r.from, r.to);
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      ta.setSelectionRange(r.caret, r.caret);
+    };
+    addEventListener("keydown", onKey, true);
+    return () => removeEventListener("keydown", onKey, true);
+  }, []);
+
   /* ---------- themes, styles, preferences ---------- */
   const pickTheme = (t) => {
     bgRef.current = t.bg;
@@ -898,9 +1076,21 @@ function Canvas({ board, store, navigate, signOut }) {
             ...[...STYLES, ...prefs.styles].map((st) => cmd("Note", `Style: ${st.label}`, () => styleSelection(st), { id: `style:${st.key}`, keywords: "colour color look", search: true })),
           ]
         : []),
+      ...(selection.cell
+        ? [
+            cmd("Table", "Add row below", () => tableEdit(addRow, true), { keywords: "insert" }),
+            cmd("Table", "Add row above", () => tableEdit(addRow, false), { keywords: "insert" }),
+            cmd("Table", "Add column right", () => tableEdit(addColumn, true), { keywords: "insert" }),
+            cmd("Table", "Add column left", () => tableEdit(addColumn, false), { keywords: "insert" }),
+            cmd("Table", "Delete row", () => tableEdit(removeLine, "row"), { keywords: "remove" }),
+            cmd("Table", "Delete column", () => tableEdit(removeLine, "col"), { keywords: "remove" }),
+          ]
+        : []),
       cmd("Board", "Rename board", () => titleInput.current?.select(), { keywords: "title name" }),
       cmd("Board", "Find in notes", openNotes, { keywords: "search replace" }),
       cmd("Board", "Delete board", removeBoard, { keywords: "remove trash", search: true }),
+      cmd("Insert", "Table", () => insertTable(), { keywords: "grid cells rows columns" }),
+      cmd("Insert", n === 1 && !selection.cell ? "Table in note" : "Text table", textTable, { keywords: "markdown grid rows columns textbox" }),
       cmd("Insert", "Image", () => api.setActiveTool({ type: "image" }), { shortcut: "9", keywords: "picture photo upload file" }),
       cmd("View", "Notes and styles", () => api.toggleSidebar({ name: "notes" }), { keywords: "panel sidebar list" }),
       cmd("View", "Full screen", fullScreen, { keywords: "focus zen" }),
@@ -1110,7 +1300,21 @@ function Canvas({ board, store, navigate, signOut }) {
               <button onClick={disconnectAll}>Disconnect</button>
             </>
           )}
-          <button onClick={background}>Background</button>
+          {selection.cell ? (
+            <>
+              <button onClick={() => tableEdit(addRow, true)} title="Add row below">+ Row</button>
+              <button onClick={() => tableEdit(addColumn, true)} title="Add column right">+ Column</button>
+              <button onClick={() => tableEdit(removeLine, "row")} title="Delete row">− Row</button>
+              <button onClick={() => tableEdit(removeLine, "col")} title="Delete column">− Column</button>
+            </>
+          ) : (
+            <>
+              <button onClick={background}>Background</button>
+              {selection.notes === 1 && (
+                <button onClick={textTable} title="Add a table to this note">Table</button>
+              )}
+            </>
+          )}
           <button onClick={copyText} title="⌘⇧C">
             Copy text
           </button>

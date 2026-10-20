@@ -12,7 +12,7 @@ export function provideCommands(key, fn) {
   return () => sources.get(key) === fn && sources.delete(key);
 }
 
-const GROUPS = ["Note", "Go to", "Create", "Board", "Insert", "View", "Paper", "Export", "Tools", "Notes", "Account"];
+const GROUPS = ["Note", "Table", "Go to", "Create", "Board", "Insert", "View", "Paper", "Export", "Tools", "Notes", "Account"];
 const rank = (c) => (GROUPS.includes(c.group) ? GROUPS.indexOf(c.group) : GROUPS.length - 1);
 
 export const allCommands = () =>

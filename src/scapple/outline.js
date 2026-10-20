@@ -1,12 +1,26 @@
 // Export a board as a Markdown outline: connected notes nest under the note they hang from.
 import { byId, isNote, noteText } from "./elements.js";
 import { neighbours } from "./connect.js";
+import { isCell, markdownTable, tableRows } from "./table.js";
 
 const readingOrder = (a, b) => a.y - b.y || a.x - b.x;
 
 export function outline(elements, title = "") {
   const map = byId(elements);
-  const notes = elements.filter((el) => isNote(el) && el.type !== "image" && noteText(el, map).trim());
+  // A table is one entry, written as a Markdown table, standing in for all its cells (its first cell carries it).
+  const tables = new Map();
+  for (const el of elements) {
+    if (!isCell(el)) continue;
+    const t = tables.get(el.customData.table);
+    if (!t || el.customData.row < t.customData.row || (el.customData.row === t.customData.row && el.customData.col < t.customData.col))
+      tables.set(el.customData.table, el);
+  }
+  const tableText = new Map();
+  for (const [table, first] of tables) {
+    const rows = tableRows(elements, table);
+    if (rows.some((r) => r.some(Boolean))) tableText.set(first.id, markdownTable(rows));
+  }
+  const notes = elements.filter((el) => isNote(el) && el.type !== "image" && (isCell(el) ? tableText.has(el.id) : noteText(el, map).trim()));
   const ids = new Set(notes.map((n) => n.id));
   const incoming = new Set();
   const links = new Map();
@@ -20,8 +34,12 @@ export function outline(elements, title = "") {
   const seen = new Set();
   const write = (n, depth) => {
     seen.add(n.id);
-    const [first, ...rest] = noteText(n, map).trim().split("\n");
     const indent = "  ".repeat(depth);
+    if (tableText.has(n.id)) {
+      lines.push("", ...tableText.get(n.id).split("\n").map((l) => indent + l), "");
+      return;
+    }
+    const [first, ...rest] = noteText(n, map).trim().split("\n");
     lines.push(`${indent}- ${first.trim()}`);
     for (const r of rest) if (r.trim()) lines.push(`${indent}  ${r.trim()}`);
     const kids = links

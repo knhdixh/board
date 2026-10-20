@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ScappleDocument Version="1.2" ID="X">
+  <Notes>
+    <Note ID="0" FontSize="12.0" Position="100.0,50.0" Width="120.0">
+      <Appearance><Alignment>Left</Alignment><Border Weight="1" Style="Rounded">0.0 0.0 0.0</Border><Fill>1.0 0.95 0.75</Fill></Appearance>
+      <String>Main idea</String>
+      <ConnectedNoteIDs>1-2</ConnectedNoteIDs>
+      <PointsToNoteIDs>2</PointsToNoteIDs>
+    </Note>
+    <Note ID="1" FontSize="12.0" Position="400.0,50.0" Width="80.0">
+      <String>Side thought</String>
+      <ConnectedNoteIDs>0</ConnectedNoteIDs>
+    </Note>
+    <Note ID="2" FontSize="12.0" Position="100.0,250.0" Width="80.0">
+      <String>Consequence</String>
+      <ConnectedNoteIDs>0</ConnectedNoteIDs>
+    </Note>
+  </Notes>
+  <BackgroundShapes>
+    <Shape ID="0" Type="RoundedRectangle" Position="80.0,20.0" Width="500.0" Height="320.0">
+      <Appearance><Fill>0.9 0.9 0.9</Fill></Appearance>
+    </Shape>
+  </BackgroundShapes>
+</ScappleDocument>

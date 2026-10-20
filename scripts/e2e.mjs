@@ -406,6 +406,51 @@ try {
   const long = (await texts()).find((x) => x.text.replace(/\n/g, " ").startsWith("This is a much"));
   check("long notes wrap", long && long.width <= 321 && long.text.includes("\n"), long && `${Math.round(long.width)}px`);
 
+  // Command palette: ⌘/ opens ours (not Excalidraw's), type to filter, Enter runs, Esc closes
+  const palette = async () => {
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "/", code: "Slash", modifiers: 4, windowsVirtualKeyCode: 191 });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: "/", code: "Slash", modifiers: 4 });
+    return until(`document.activeElement?.classList.contains("pal-input")`, 3000);
+  };
+  check("⌘/ opens the palette", await palette());
+  check("Excalidraw's own palette stays shut", !(await js(`!!document.querySelector(".command-palette-dialog")`)));
+  const palItems = await js(`[...document.querySelectorAll(".pal-item .pal-label")].map(e => e.textContent)`);
+  check("palette lists boards and board commands", ["New board", "Zoom to fit", "Outline"].every((l) => palItems.includes(l)), palItems.slice(0, 6).join(", "));
+  await sleep(700);
+  await shot("board-palette.png");
+  await type("grid");
+  await sleep(100);
+  check("palette filters as you type", (await js(`document.querySelector(".pal-item.on .pal-label")?.textContent`)) === "Grid");
+  const gridBefore = await js(`window.__board.getAppState().gridModeEnabled`);
+  await key("Enter");
+  check("Enter runs the command", await until(`window.__board.getAppState().gridModeEnabled === ${!gridBefore}`, 2000));
+  check("and closes the palette", !(await js(`!!document.querySelector(".pal")`)));
+  await palette();
+  await type("longer note");
+  await sleep(100);
+  check("palette finds notes", (await js(`document.querySelector(".pal-item.on .pal-hint")?.textContent`)) === "Notes");
+  await key("Enter");
+  check("picking a note selects it", await until(`(() => { const ids = Object.keys(window.__board.getAppState().selectedElementIds); return ids.length === 1 && window.__board.getSceneElements().find(e => e.id === ids[0])?.text?.startsWith("This is a much"); })()`, 2000));
+  await palette();
+  await key("Escape");
+  check("Esc closes the palette", await until(`!document.querySelector(".pal")`, 1000));
+  await js(`window.__board.updateScene({ appState: { gridModeEnabled: ${gridBefore}, selectedElementIds: {} } })`);
+
+  // Drop an image onto the board: it lands where it was dropped and goes up to Storage
+  await js(`(async () => {
+    const c = Object.assign(document.createElement("canvas"), { width: 120, height: 80 });
+    const g = c.getContext("2d"); g.fillStyle = "#0d52ff"; g.fillRect(0, 0, 120, 80); g.fillStyle = "#fff"; g.fillRect(20, 20, 40, 40);
+    const blob = await new Promise((r) => c.toBlob(r, "image/jpeg"));
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], "photo.jpg", { type: "image/jpeg" }));
+    const target = document.querySelector(".excalidraw canvas.interactive");
+    for (const type of ["dragenter", "dragover", "drop"])
+      target.dispatchEvent(new DragEvent(type, { dataTransfer: dt, clientX: 900, clientY: 600, bubbles: true, cancelable: true }));
+  })()`);
+  check("dropped image lands on the board", await until(`window.__board.getSceneElements().some(e => e.type === "image" && window.__board.getFiles()[e.fileId])`, 5000));
+  const imageId = await js(`window.__board.getSceneElements().find(e => e.type === "image")?.fileId`);
+  await sleep(3000); // upload, then the save without the image data
+
   // Saved: wait for the status and reload
   await sleep(1500);
   check("saves", await until(`document.querySelector(".topbar .status")?.textContent === "Saved"`, 5000));
@@ -417,6 +462,14 @@ try {
   check("no unsaved-changes prompt after saving", dialogs.length === 0, dialogs.join(","));
   const sig = (els) => els.filter((e) => e.type === "text").map((e) => e.text).sort().join("|") + "#" + els.filter((e) => e.type === "arrow").length;
   check("board survives a reload", sig(after) === sig(savedScene), `${sig(after).length} vs ${sig(savedScene).length}`);
+  check("image comes back after a reload", await until(`!!window.__board.getFiles()[${JSON.stringify(imageId)}]?.dataURL`, 8000));
+  const savedFile = await js(`(async () => {
+    const token = JSON.parse(localStorage.getItem(Object.keys(localStorage).find(k => k.endsWith("-auth-token")))).access_token;
+    const r = await fetch(${JSON.stringify(process.env.VITE_SUPABASE_URL)} + "/rest/v1/boards?select=scene&id=eq." + location.pathname.split("/").pop(),
+      { headers: { apikey: ${JSON.stringify(process.env.VITE_SUPABASE_KEY)}, Authorization: "Bearer " + token } });
+    return (await r.json())[0].scene.files[${JSON.stringify(imageId)}];
+  })()`);
+  check("image is kept in Storage, not in the board", savedFile?.stored === true && !savedFile.dataURL, savedFile ? Object.keys(savedFile).join(",") : "missing");
 
   // Import a Scapple file from the home page
   await send("Page.navigate", { url: BASE + "/" });

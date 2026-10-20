@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { startFluid } from "./fluid.js";
 import { supabase } from "./store.js";
-import { importScapple } from "./scapple/scap.js";
+import { BOARD_FILES, readBoardFile } from "./boardFile.js";
+import { openPalette } from "./commands.js";
+import { ago } from "./ago.js";
 import { toast } from "./toast.jsx";
 
 const WORD = "board";
@@ -65,28 +67,6 @@ function decode(el) {
     if (p < 1) el._raf = requestAnimationFrame(frame);
   };
   el._raf = requestAnimationFrame(frame);
-}
-
-const ago = (iso) => {
-  const s = (Date.now() - new Date(iso)) / 1000;
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  if (s < 86400 * 30) return `${Math.floor(s / 86400)} d ago`;
-  return new Date(iso).toLocaleDateString();
-};
-
-/** Read a .scap or .excalidraw file into { title, scene }. */
-async function readBoardFile(file) {
-  const text = await file.text();
-  const title = file.name.replace(/\.(scap|excalidraw|json)$/i, "").toLowerCase() || "imported";
-  if (/^\s*</.test(text)) return { title, scene: { elements: importScapple(text), needsMeasure: true } };
-  const data = JSON.parse(text);
-  if (data?.type !== "excalidraw") throw new Error("Not a board file");
-  return {
-    title,
-    scene: { elements: data.elements ?? [], appState: { viewBackgroundColor: data.appState?.viewBackgroundColor }, files: data.files ?? {} },
-  };
 }
 
 function SignIn() {
@@ -217,10 +197,13 @@ function Boards({ store, session, navigate, signOut }) {
         <button className="link" onClick={() => file.current.click()}>
           Import file
         </button>
-        <input ref={file} type="file" accept=".scap,.excalidraw,.json" hidden onChange={onFile} />
+        <input ref={file} type="file" accept={BOARD_FILES} hidden onChange={onFile} />
       </div>
       <p className="note rise late">
-        {session.user.email} ·{" "}
+        <button className="link" onClick={openPalette}>
+          ⌘/ commands
+        </button>{" "}
+        · {session.user.email} ·{" "}
         <a
           className="link"
           href="/usage"

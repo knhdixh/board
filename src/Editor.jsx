@@ -11,7 +11,7 @@ import {
   viewportCoordsToSceneCoords,
 } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
-import { Conflict, settings } from "./store.js";
+import { Conflict, images, settings } from "./store.js";
 import NotesPanel from "./NotesPanel.jsx";
 import { toast } from "./toast.jsx";
 import {
@@ -27,7 +27,8 @@ import { row, sameWidth, stack, units } from "./scapple/layout.js";
 import { STYLES, applyStyle, fitContainers, styleFromNote } from "./scapple/styles.js";
 import { DEFAULT_THEME, THEMES, retheme, themeAppState, themeFor } from "./scapple/themes.js";
 import { boxesOf, restack } from "./scapple/stacks.js";
-import { replaceInNotes } from "./scapple/notes.js";
+import { listNotes, replaceInNotes } from "./scapple/notes.js";
+import { openPalette, provideCommands } from "./commands.js";
 import { outline, selectionOutline } from "./scapple/outline.js";
 import { addBackground, carry, contentsOf, isBackground } from "./scapple/background.js";
 import { exportScapple } from "./scapple/scap.js";
@@ -123,7 +124,8 @@ function Canvas({ board, store, navigate, signOut }) {
     return {
       elements: scene.elements ?? [],
       appState: { ...DEFAULTS, ...(scene.appState ?? {}), ...themeAppState(themeFor(scene.appState?.viewBackgroundColor ?? DEFAULT_THEME.bg)) },
-      files: scene.files ?? {},
+      // Images kept in Storage arrive later (see below); only embedded ones can be shown straight away.
+      files: Object.fromEntries(Object.entries(scene.files ?? {}).filter(([, f]) => f.dataURL)),
       scrollToContent: !scene.appState?.scrollX,
     };
   }, [board]);
@@ -154,8 +156,9 @@ function Canvas({ board, store, navigate, signOut }) {
     const all = api.getFiles();
     const files = {};
     for (const el of elements)
-      if (el.type === "image" && el.fileId && all[el.fileId])
-        files[el.fileId] = all[el.fileId];
+      if (el.type === "image" && el.fileId)
+        if (stored.current.has(el.fileId)) files[el.fileId] = stored.current.get(el.fileId);
+        else if (all[el.fileId]) files[el.fileId] = all[el.fileId];
     return {
       elements,
       appState: Object.fromEntries(KEPT_STATE.map((k) => [k, appState[k]])),
@@ -225,6 +228,51 @@ function Canvas({ board, store, navigate, signOut }) {
     dirty.current = { scene: true, title: true };
     flush();
   };
+
+  /* ---------- images ---------- */
+  // Images live in Storage; the board only keeps a note of each one. Files that are
+  // in Storage, by id, as saved in the board (no data URL).
+  const stored = useRef(
+    new Map(Object.values(board.scene?.files ?? {}).filter((f) => f.stored).map((f) => [f.id, f])),
+  );
+  const uploading = useRef(new Set());
+
+  useEffect(() => {
+    if (!api) return;
+    const missing = [...stored.current.values()];
+    if (!missing.length) return;
+    let live = true;
+    Promise.allSettled(missing.map((f) => images.download(f))).then((rs) => {
+      if (!live) return;
+      const got = rs.filter((r) => r.status === "fulfilled").map((r) => r.value);
+      if (got.length) api.addFiles(got);
+      if (got.length < rs.length) toast(`${rs.length - got.length} images couldn't load`);
+    });
+    return () => {
+      live = false;
+    };
+  }, [api]);
+
+  // New images (dropped, pasted, or embedded in an older board) go up to Storage once.
+  const uploadNew = useCallback(
+    (elements, files) => {
+      for (const el of elements) {
+        const f = el.type === "image" && !el.isDeleted && files[el.fileId];
+        if (!f?.dataURL || stored.current.has(f.id) || uploading.current.has(f.id)) continue;
+        uploading.current.add(f.id);
+        images
+          .upload(f)
+          .then(() => {
+            stored.current.set(f.id, { id: f.id, mimeType: f.mimeType, created: f.created, stored: true });
+            dirty.current.scene = true; // re-save without the image data
+            if (!blocked.current) schedule();
+          })
+          .catch(() => {}) // stays embedded in the board, so nothing is lost
+          .finally(() => uploading.current.delete(f.id));
+      }
+    },
+    [schedule],
+  );
 
   /* ---------- scene helpers ---------- */
   const commit = useCallback(
@@ -318,9 +366,12 @@ function Canvas({ board, store, navigate, signOut }) {
   const onChange = useCallback(
     (elements, appState, files) => {
       const key = `${getSceneVersion(elements)}:${appState.viewBackgroundColor}:${Object.keys(files).length}:${appState.gridModeEnabled}`;
-      if (lastKey.current === null) lastKey.current = key;
-      else if (key !== lastKey.current) {
+      if (lastKey.current === null) {
         lastKey.current = key;
+        uploadNew(elements, files);
+      } else if (key !== lastKey.current) {
+        lastKey.current = key;
+        uploadNew(elements, files);
         dirty.current.scene = true;
         if (!blocked.current) schedule();
       }
@@ -394,7 +445,7 @@ function Canvas({ board, store, navigate, signOut }) {
         else if (lastNotes.current && !lastNotes.current.at) lastNotes.current.at = Date.now();
       }
     },
-    [api, commit, schedule], // eslint-disable-line react-hooks/exhaustive-deps
+    [api, commit, schedule, uploadNew], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   /* ---------- drop a note onto another to connect ---------- */
@@ -812,6 +863,71 @@ function Canvas({ board, store, navigate, signOut }) {
     if (!blocked.current) schedule();
   };
 
+  /* ---------- command palette (⌘/) ---------- */
+  const titleInput = useRef(null);
+  const jumpTo = (id) => {
+    const el = api.getSceneElements().find((e) => e.id === id);
+    if (!el) return;
+    api.updateScene({ appState: { selectedElementIds: { [id]: true } } });
+    api.scrollToContent(el, { animate: true, duration: 300 });
+  };
+  const openNotes = () => {
+    api.toggleSidebar({ name: "notes", force: true });
+    setTimeout(() => document.querySelector(".notes-panel input[type=search]")?.focus());
+  };
+  // Re-provided on every render, so the commands always see the current selection.
+  useEffect(() => {
+    if (!api) return;
+    const n = selection.notes;
+    const cmd = (group, label, run, more) => ({ id: `${group}:${label}`, group, label, run, ...more });
+    const tool = (label, type, shortcut) => cmd("Tools", label, () => api.setActiveTool({ type }), { shortcut });
+    return provideCommands("editor", () => [
+      ...(n
+        ? [
+            ...(n > 1
+              ? [
+                  cmd("Note", "Stack", () => act(stack), { keywords: "column align" }),
+                  cmd("Note", "Row", () => act(row), { keywords: "align side" }),
+                  cmd("Note", "Same width", () => actMeasured(sameWidth)),
+                  cmd("Note", "Connect", connectChain, { keywords: "link join" }),
+                  cmd("Note", "Disconnect", disconnectAll, { keywords: "unlink" }),
+                ]
+              : []),
+            cmd("Note", "Background", background, { keywords: "group shape" }),
+            cmd("Note", "Copy as text", copyText, { shortcut: "⌘⇧C" }),
+            ...[...STYLES, ...prefs.styles].map((st) => cmd("Note", `Style: ${st.label}`, () => styleSelection(st), { id: `style:${st.key}`, keywords: "colour color look", search: true })),
+          ]
+        : []),
+      cmd("Board", "Rename board", () => titleInput.current?.select(), { keywords: "title name" }),
+      cmd("Board", "Find in notes", openNotes, { keywords: "search replace" }),
+      cmd("Board", "Delete board", removeBoard, { keywords: "remove trash", search: true }),
+      cmd("Insert", "Image", () => api.setActiveTool({ type: "image" }), { shortcut: "9", keywords: "picture photo upload file" }),
+      cmd("View", "Notes and styles", () => api.toggleSidebar({ name: "notes" }), { keywords: "panel sidebar list" }),
+      cmd("View", "Full screen", fullScreen, { keywords: "focus zen" }),
+      cmd("View", "Zoom to fit", () => api.scrollToContent(undefined, { fitToContent: true, animate: true, duration: 300 }), { shortcut: "⇧1", keywords: "whole board quickzoom" }),
+      cmd("View", "Grid", () => api.updateScene({ appState: { gridModeEnabled: !api.getAppState().gridModeEnabled } }), { shortcut: "⌘'", keywords: "toggle snap" }),
+      cmd("View", "Keyboard shortcuts", () => api.updateScene({ appState: { openDialog: { name: "help" } } }), { shortcut: "?", keywords: "help keys" }),
+      ...THEMES.map((t) => cmd("Paper", t.label, () => pickTheme(t), { hint: theme.key === t.key ? "current" : "", keywords: "theme colour color background", search: theme.key === t.key })),
+      cmd("Export", "Outline", exportOutline, { keywords: "markdown md download" }),
+      cmd("Export", "Scapple file", exportScap, { keywords: "scap download" }),
+      cmd("Export", "Image", () => api.updateScene({ appState: { openDialog: { name: "imageExport" } } }), { shortcut: "⌘⇧E", keywords: "png svg picture save" }),
+      cmd("Export", "Print", printBoard),
+      ...(n ? [] : [cmd("Export", "Copy board as text", copyText, { shortcut: "⌘⇧C", keywords: "clipboard scrivener" })]),
+      tool("Select", "selection", "V"),
+      tool("Hand", "hand", "H"),
+      tool("Text", "text", "T"),
+      tool("Rectangle", "rectangle", "R"),
+      tool("Ellipse", "ellipse", "O"),
+      tool("Arrow", "arrow", "A"),
+      tool("Line", "line", "L"),
+      tool("Draw", "freedraw", "P"),
+      tool("Eraser", "eraser", "E"),
+      ...listNotes(api.getSceneElements()).map((note) =>
+        cmd("Notes", note.text.split("\n")[0].slice(0, 80), () => jumpTo(note.id), { id: `note:${note.id}`, keywords: note.text, search: true }),
+      ),
+    ]);
+  });
+
   const statusText = {
     saved: "Saved",
     saving: "Saving",
@@ -844,6 +960,7 @@ function Canvas({ board, store, navigate, signOut }) {
                 ← Boards
               </a>
               <input
+                ref={titleInput}
                 className="title"
                 value={title}
                 onChange={(e) => onTitle(e.target.value)}
@@ -851,6 +968,9 @@ function Canvas({ board, store, navigate, signOut }) {
                 spellCheck={false}
               />
               <span className={"status " + status}>{statusText}</span>
+              <button className="pal-open" onClick={openPalette} title="Commands" aria-label="Commands">
+                ⌘/
+              </button>
               {status === "conflict" && (
                 <>
                   <button className="link" onClick={() => location.reload()}>
@@ -870,6 +990,9 @@ function Canvas({ board, store, navigate, signOut }) {
             All boards
           </MainMenu.Item>
           <MainMenu.DefaultItems.SearchMenu />
+          <MainMenu.Item onSelect={openPalette} shortcut="⌘/">
+            Commands
+          </MainMenu.Item>
           <MainMenu.Separator />
           <MainMenu.Item onSelect={fullScreen}>Full screen</MainMenu.Item>
           <MainMenu.Item onSelect={() => api.toggleSidebar({ name: "notes" })}>Notes and styles</MainMenu.Item>
@@ -920,7 +1043,8 @@ function Canvas({ board, store, navigate, signOut }) {
                 Hold ⌘ while dropping for an arrow. Drop again to disconnect.
               </p>
               <p className="muted">Select a note, then ⌘-double-click to write a connected one.</p>
-              <p className="muted">Hold Z to see the whole board.</p>
+              <p className="muted">Hold Z to see the whole board. Drop images anywhere.</p>
+              <p className="muted">⌘/ for every command.</p>
             </div>
           </WelcomeScreen.Center>
         </WelcomeScreen>

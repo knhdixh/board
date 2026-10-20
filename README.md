@@ -22,6 +22,8 @@ Every feature on Scapple's feature list, rebuilt on Excalidraw:
 | **Customise the appearance of notes** | The note bar offers quick styles, and the **Notes panel** has them all (plain, bubble, box, dashed, five fills, title, faded). Save any note's look as your own style, and choose which style new notes get. Saved styles follow you between devices. |
 | **Paper colours** | Menu → Paper: cream (the default), white, sage, sky, blueprint or night. Text, lines, fills and background shapes all change to suit, and colours you picked yourself are left alone. Any colour from Excalidraw's own canvas picker works too, with text kept readable. |
 | **Notes panel** | Click the **N notes** counter (or Menu → Notes and styles) for a list of every note: find, click to jump to one, and replace text across the board. |
+| **Images** | Drag images from Finder or another app onto the board, or paste them. They're stored in Supabase Storage (private, owner only), so boards stay small and quick to save. Images in older boards move to Storage the next time you open them. |
+| **Command palette** | **⌘/** anywhere, like Todoist: jump to a board or a note, create or import a board, and run every board command (stack, connect, styles, paper, export, tools…). Type to filter, ↑↓ and ↵ to run. |
 | **QuickZoom** | Hold **Z** to see the whole board. Let go to zoom back in where the mouse is. |
 | **Move and arrange notes easily** | Excalidraw's selection, align, distribute, nudge, group and lock, plus the arrangement tools above. |
 | **Full screen mode** | Menu → Full screen hides everything but your notes (Esc to leave). |
@@ -70,7 +72,7 @@ SB_SECRET=<secret key> node scripts/e2e-cloud.mjs
 - Sign-in emails use Supabase's built-in mailer, which only sends a few emails an hour.
 - Measured transfer only counts traffic from this app. Visits to the Supabase dashboard, for example, aren't included.
 - No real-time collaboration: it's a single-user app, with conflict detection between your own devices.
-- Images are stored inside the board's JSON, so boards with many large images get slow to save.
+- Images stay in Storage after you delete them from a board (the same image may be on another board).
 - Scapple import covers notes, styles, connections and background shapes. Rich-text formatting inside notes (bold runs, links) comes in as plain text.
 
 ## Credits

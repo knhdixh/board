@@ -33,6 +33,8 @@ try {
   process.exitCode = r.status;
 } finally {
   await admin.from("allowed_users").delete().eq("email", owner.email);
+  const { data: files } = await admin.storage.from("images").list(owner.id);
+  if (files?.length) await admin.storage.from("images").remove(files.map((f) => `${owner.id}/${f.name}`));
   await admin.auth.admin.deleteUser(owner.id);
   await admin.auth.admin.deleteUser(stranger.id);
 }

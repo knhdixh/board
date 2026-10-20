@@ -315,3 +315,50 @@ a.link { text-decoration: none; }
 .remove { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0 2px; }
 .remove:hover { color: var(--fg); }
 .save-style { margin-top: 16px; }
+
+/* ---------- command palette (⌘/) ---------- */
+.pal-scrim {
+  position: fixed; inset: 0; z-index: 3000;
+  background: rgba(255, 255, 255, .6);
+  display: flex; justify-content: center; align-items: flex-start;
+  padding: 14vh 16px 16px;
+  animation: pal-fade .3s ease;
+}
+.pal {
+  width: 100%; max-width: 560px; max-height: min(520px, 72vh);
+  display: flex; flex-direction: column;
+  background: var(--bg); box-shadow: 0 0 0 1px var(--line);
+  font: 400 15px/1.6 var(--font); color: var(--fg);
+  animation: pal-in .5s var(--ease);
+}
+.pal-input {
+  border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; outline: none;
+  padding: 16px 18px; font-size: 16px;
+}
+.pal-input::placeholder { color: var(--muted); }
+.pal-list { list-style: none; margin: 0; padding: 6px 0; overflow-y: auto; flex: 1; }
+.pal-group { padding: 12px 18px 4px; font-size: 13px; color: var(--muted); }
+.pal-item {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 7px 18px; cursor: pointer;
+}
+.pal-item.on { background: #f2f2f2; }
+.pal-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-hint { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.pal-key { font: 400 13px var(--font); color: var(--muted); font-variant-numeric: tabular-nums; min-width: 2.5em; text-align: right; }
+.pal-empty { padding: 12px 18px; }
+.pal-foot {
+  display: flex; justify-content: space-between; gap: 12px;
+  border-top: 1px solid var(--line); padding: 8px 18px; font-size: 13px; color: var(--muted);
+}
+@keyframes pal-fade { from { opacity: 0; } }
+@keyframes pal-in { from { opacity: 0; transform: translateY(-8px); } }
+.topbar .pal-open {
+  background: none; border: 0; padding: 2px 4px; cursor: pointer; color: var(--muted); font-size: 13px;
+}
+.topbar .pal-open:hover { color: var(--fg); }
+@media (max-width: 480px) {
+  .pal-scrim { padding-top: 8vh; }
+  .pal-foot span:first-child { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .pal-scrim, .pal { animation: none; } }

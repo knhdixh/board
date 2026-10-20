@@ -37,6 +37,33 @@ export const isAllowed = async () => must(await supabase.rpc("is_allowed"));
 export const usageStats = async () => must(await supabase.rpc("usage_stats"));
 export const recordUsage = async (u) => must(await supabase.rpc("record_usage", { visits: u.visits, vercel_bytes: u.vercel_bytes, supabase_bytes: u.supabase_bytes }));
 
+const dataURLToBlob = async (dataURL) => (await fetch(dataURL)).blob();
+const blobToDataURL = (blob) =>
+  new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+
+/** Board images in Storage, at <user id>/<file id>. */
+export const images = {
+  async upload(file) {
+    const { data: s } = await supabase.auth.getSession();
+    const { error } = await supabase.storage
+      .from("images")
+      .upload(`${s.session.user.id}/${file.id}`, await dataURLToBlob(file.dataURL), { contentType: file.mimeType, upsert: true });
+    if (error) throw error;
+  },
+  /** The file as Excalidraw wants it, with its data URL filled in. */
+  async download(file) {
+    const { data: s } = await supabase.auth.getSession();
+    const { data, error } = await supabase.storage.from("images").download(`${s.session.user.id}/${file.id}`);
+    if (error) throw error;
+    return { ...file, dataURL: await blobToDataURL(data) };
+  },
+};
+
 export const settings = {
   async get() {
     const row = must(await supabase.from("settings").select("data").maybeSingle());

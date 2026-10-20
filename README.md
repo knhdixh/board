@@ -2,7 +2,7 @@
 
 Scapple-style freeform notes on top of Excalidraw. Write anywhere, then drop one note onto another to connect them.
 
-**Live:** https://board.knhdixh.com
+**Live:** https://board.knhdixh.com · auto-deploys from `main` via Vercel
 
 ![A board imported from Scapple: a yellow bubble note, a dotted connection and an arrow, inside a grey background shape](docs/screenshot.png)
 

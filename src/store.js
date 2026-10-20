@@ -1,9 +1,10 @@
-// Where boards live: your Supabase account when signed in, this browser's storage otherwise.
+// Boards live in Supabase, readable only by the owner (row-level security + an allow-list).
 import { createClient } from "@supabase/supabase-js";
+import { meteredFetch } from "./usage.js";
 
 const url = import.meta.env.VITE_SUPABASE_URL;
 const key = import.meta.env.VITE_SUPABASE_KEY;
-export const supabase = url && key ? createClient(url, key, { auth: { flowType: "implicit" } }) : null;
+export const supabase = url && key ? createClient(url, key, { auth: { flowType: "implicit" }, global: { fetch: meteredFetch } }) : null;
 
 export class Conflict extends Error {
   constructor() {
@@ -12,100 +13,26 @@ export class Conflict extends Error {
 }
 
 const SUMMARY = "id, title, updated_at, version";
+const must = ({ data, error }) => {
+  if (error) throw error;
+  return data;
+};
 
 export const cloud = {
-  kind: "cloud",
-  async list() {
-    const { data, error } = await supabase.from("boards").select(SUMMARY).order("updated_at", { ascending: false });
-    if (error) throw error;
-    return data;
-  },
-  async get(id) {
-    const { data, error } = await supabase.from("boards").select("*").eq("id", id).maybeSingle();
-    if (error) throw error;
-    return data;
-  },
-  async create(title = "untitled", scene = {}) {
-    const { data, error } = await supabase.from("boards").insert({ title, scene }).select(SUMMARY).single();
-    if (error) throw error;
-    return data;
-  },
+  list: async () => must(await supabase.from("boards").select(SUMMARY).order("updated_at", { ascending: false })),
+  get: async (id) => must(await supabase.from("boards").select("*").eq("id", id).maybeSingle()),
+  create: async (title = "untitled", scene = {}) => must(await supabase.from("boards").insert({ title, scene }).select(SUMMARY).single()),
   /** Saves only if nobody else saved since `version`; returns the new version. */
   async save(id, changes, version) {
-    const { data, error } = await supabase
-      .from("boards")
-      .update(changes)
-      .eq("id", id)
-      .eq("version", version)
-      .select("version, updated_at")
-      .maybeSingle();
-    if (error) throw error;
+    const data = must(await supabase.from("boards").update(changes).eq("id", id).eq("version", version).select("version, updated_at").maybeSingle());
     if (!data) throw new Conflict();
     return data;
   },
   async remove(id) {
-    const { error } = await supabase.from("boards").delete().eq("id", id);
-    if (error) throw error;
+    must(await supabase.from("boards").delete().eq("id", id));
   },
 };
 
-const INDEX = "board:index";
-const read = (k, d) => {
-  try {
-    return JSON.parse(localStorage.getItem(k)) ?? d;
-  } catch {
-    return d;
-  }
-};
-const write = (k, v) => localStorage.setItem(k, JSON.stringify(v));
-
-export const local = {
-  kind: "local",
-  async list() {
-    return read(INDEX, []).sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
-  },
-  async get(id) {
-    const row = read(INDEX, []).find((b) => b.id === id);
-    return row ? { ...row, scene: read("board:" + id, {}) } : null;
-  },
-  async create(title = "untitled", scene = {}) {
-    const row = { id: crypto.randomUUID(), title, updated_at: new Date().toISOString(), version: 1 };
-    write("board:" + row.id, scene);
-    write(INDEX, [...read(INDEX, []), row]);
-    return row;
-  },
-  async save(id, changes) {
-    const rows = read(INDEX, []);
-    const row = rows.find((b) => b.id === id);
-    if (!row) throw new Error("Board not found");
-    if (changes.scene) {
-      try {
-        write("board:" + id, changes.scene);
-      } catch {
-        throw new Error("This browser is out of space. Sign in to keep big boards.");
-      }
-    }
-    if (changes.title !== undefined) row.title = changes.title;
-    row.updated_at = new Date().toISOString();
-    row.version += 1;
-    write(INDEX, rows);
-    return { version: row.version, updated_at: row.updated_at };
-  },
-  async remove(id) {
-    localStorage.removeItem("board:" + id);
-    write(INDEX, read(INDEX, []).filter((b) => b.id !== id));
-  },
-};
-
-/** After signing in, move boards made on this device into the account. Returns how many moved. */
-export async function adoptLocalBoards() {
-  const rows = await local.list();
-  let moved = 0;
-  for (const row of rows) {
-    const full = await local.get(row.id);
-    await cloud.create(full.title, full.scene);
-    await local.remove(row.id);
-    moved++;
-  }
-  return moved;
-}
+export const isAllowed = async () => must(await supabase.rpc("is_allowed"));
+export const usageStats = async () => must(await supabase.rpc("usage_stats"));
+export const recordUsage = async (u) => must(await supabase.rpc("record_usage", { visits: u.visits, vercel_bytes: u.vercel_bytes, supabase_bytes: u.supabase_bytes }));

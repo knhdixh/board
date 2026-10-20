@@ -38,3 +38,21 @@ export function outline(elements, title = "") {
   for (const n of sorted) if (!seen.has(n.id)) write(n, 0);
   return lines.join("\n") + "\n";
 }
+
+/** Outline of just the selected notes (and the connections between them), for copying elsewhere. */
+export function selectionOutline(elements, selectedIds) {
+  const map = byId(elements);
+  const keep = new Set();
+  for (const id of selectedIds) {
+    const el = map.get(id);
+    if (!el) continue;
+    const note = el.type === "text" && el.containerId ? map.get(el.containerId) : el;
+    if (!note) continue;
+    keep.add(note.id);
+    for (const b of note.boundElements ?? []) if (b.type === "text") keep.add(b.id);
+  }
+  const subset = elements.filter(
+    (el) => keep.has(el.id) || (el.type === "arrow" && keep.has(el.startBinding?.elementId) && keep.has(el.endBinding?.elementId)),
+  );
+  return outline(subset);
+}

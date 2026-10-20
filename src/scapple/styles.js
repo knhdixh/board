@@ -5,6 +5,7 @@ import { separate } from "./layout.js";
 export const STYLES = [
   { key: "plain", label: "plain" },
   { key: "bubble", label: "bubble", stroke: "#1e1e1e" },
+  { key: "box", label: "box", stroke: "#1e1e1e", square: true },
   { key: "yellow", label: "yellow", fill: "#fff3bf" },
   { key: "blue", label: "blue", fill: "#d0ebff" },
   { key: "green", label: "green", fill: "#d3f9d8" },
@@ -80,7 +81,7 @@ export function applyStyle(elements, selectedIds, key) {
         ? { strokeColor: "transparent", backgroundColor: "transparent" }
         : style.fill
           ? { strokeColor: "transparent", backgroundColor: style.fill, fillStyle: "solid" }
-          : { strokeColor: style.stroke, backgroundColor: "transparent", strokeWidth: 1 };
+          : { strokeColor: style.stroke, backgroundColor: "transparent", strokeWidth: 1, roundness: style.square ? null : { type: 3 } };
     out = out.map((e) => (e.id === el.id ? touch(e, { ...changes, roughness: 0 }) : e));
   }
   // New bubbles are bigger than the text they wrap; don't let them land on each other.

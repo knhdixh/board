@@ -200,3 +200,116 @@ describe("outline", () => {
     expect(md).toBe("- first\n  more\n- second\n");
   });
 });
+
+describe("background shapes", () => {
+  it("wraps selected notes in a magnetic shape behind them", async () => {
+    const { addBackground, contentsOf, isBackground } = await import("../src/scapple/background.js");
+    const a = note("a", 100, 100);
+    const b = note("b", 300, 100);
+    const outside = note("far", 900, 900);
+    let els = toggleConnection([a, b, outside], a.id, b.id).elements;
+    const { elements, id } = addBackground(els, [a.id, b.id]);
+    expect(elements[0].id).toBe(id); // at the back
+    expect(isBackground(elements[0])).toBe(true);
+    expect(elements[0]).toMatchObject({ x: 76, y: 76, width: 328, height: 68 });
+    const inside = contentsOf(elements, id);
+    expect(inside.has(a.id) && inside.has(b.id)).toBe(true);
+    expect(inside.has(outside.id)).toBe(false);
+    expect(inside.has(elements.find((e) => e.type === "arrow").id)).toBe(true);
+  });
+
+  it("carries its notes when moved and re-routes links to notes elsewhere", async () => {
+    const { addBackground, carry, contentsOf } = await import("../src/scapple/background.js");
+    const a = note("a", 100, 100);
+    const far = note("far", 100, 600);
+    let els = toggleConnection([a, far], a.id, far.id).elements;
+    const r = addBackground(els, [a.id]);
+    els = r.elements;
+    const ids = contentsOf(els, r.id);
+    const moved = byId(carry(els, els, ids, 200, 0));
+    expect(moved.get(a.id).x).toBe(300);
+    expect(moved.get(far.id).x).toBe(100);
+    const arrow = [...moved.values()].find((e) => e.type === "arrow");
+    expect(arrow.x).toBeGreaterThan(250); // starts at the moved note now
+  });
+
+  it("imported Scapple shapes are magnetic", () => {
+    const els = importScapple(SCAP);
+    expect(els[0].customData).toEqual({ background: true });
+  });
+});
+
+describe("same width", () => {
+  it("gives notes the widest width", async () => {
+    const { sameWidth } = await import("../src/scapple/layout.js");
+    const a = note("a", 0, 0, 50);
+    const b = note("b", 0, 100, 140);
+    const out = byId(sameWidth([a, b], [a.id, b.id]));
+    expect(out.get(a.id)).toMatchObject({ width: 140, autoResize: false });
+  });
+});
+
+describe("scapple export", () => {
+  it("round-trips notes, fills, arrows and background shapes", async () => {
+    const { exportScapple } = await import("../src/scapple/scap.js");
+    const xml = exportScapple(importScapple(SCAP));
+    const again = importScapple(xml);
+    const texts = again.filter((e) => e.type === "text").map((t) => t.text).sort();
+    expect(texts).toEqual(["Consequence", "Main idea", "Side thought"]);
+    const arrows = again.filter((e) => e.type === "arrow");
+    expect(arrows).toHaveLength(2);
+    expect(arrows.filter((a) => a.endArrowhead || a.startArrowhead)).toHaveLength(1);
+    expect(again.find((e) => e.customData?.background)).toMatchObject({ x: expect.closeTo(80 * 4 / 3, 0), width: expect.closeTo(500 * 4 / 3, 0) });
+    const main = again.find((e) => e.text === "Main idea");
+    expect(byId(again).get(main.containerId).backgroundColor).toBe("#fff2bf");
+  });
+
+  it("escapes text", async () => {
+    const { exportScapple } = await import("../src/scapple/scap.js");
+    const xml = exportScapple([note("a < b & \"c\"", 0, 0)]);
+    expect(importScapple(xml).find((e) => e.type === "text").text).toBe('a < b & "c"');
+  });
+});
+
+describe("copy as text", () => {
+  it("outlines only the selection", async () => {
+    const { selectionOutline } = await import("../src/scapple/outline.js");
+    const a = note("parent", 0, 0);
+    const b = note("child", 0, 100);
+    const c = note("not selected", 0, 200);
+    const els = toggleConnection([a, b, c], a.id, b.id, { arrow: true }).elements;
+    expect(selectionOutline(els, [a.id, b.id])).toBe("- parent\n  - child\n");
+  });
+});
+
+describe("usage dashboard", () => {
+  it("compares usage with free-tier limits", async () => {
+    const { rows, bytes, pctLabel } = await import("../src/usageRows.js");
+    const now = Date.parse("2026-10-20T12:00:00Z");
+    const r = rows(
+      {
+        db_bytes: 50 * 1024 * 1024,
+        active_users_30d: 1,
+        storage_bytes: 0,
+        month: { supabase_bytes: 512 * 1024 * 1024, vercel_bytes: 0, visits: 3 },
+        heartbeats: { "vercel-cron": { at: "2026-10-20T06:00:00Z", count: 4 }, app: { at: "2026-10-19T12:00:00Z", count: 9 } },
+      },
+      now,
+    );
+    const db = r.supabase.find((x) => x.label === "Database");
+    expect(db.p).toBe(10);
+    expect(db.used).toBe("50 MB");
+    expect(r.supabase.find((x) => x.label === "Egress").p).toBe(10);
+    const idle = r.supabase.find((x) => x.label === "Idle time");
+    expect(idle.used).toBe("0.3 d"); // the newest ping counts
+    expect(idle.note).toBe("last ping 6 h ago");
+    expect(bytes(1536)).toBe("1.5 KB");
+    expect(pctLabel(0.002)).toBe("<0.1%");
+  });
+
+  it("treats a project with no pings as about to pause", async () => {
+    const { rows } = await import("../src/usageRows.js");
+    const r = rows({ db_bytes: 0, active_users_30d: 0, storage_bytes: 0, month: { supabase_bytes: 0, vercel_bytes: 0, visits: 0 }, heartbeats: {} });
+    expect(r.supabase.find((x) => x.label === "Idle time").p).toBe(100);
+  });
+});

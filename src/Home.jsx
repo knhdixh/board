@@ -89,7 +89,7 @@ async function readBoardFile(file) {
   };
 }
 
-function SignIn({ startGuest }) {
+function SignIn() {
   const [email, setEmail] = useState("");
   const [state, setState] = useState("idle"); // idle | sending | sent
   const [error, setError] = useState("");
@@ -97,10 +97,10 @@ function SignIn({ startGuest }) {
     e.preventDefault();
     setError("");
     setState("sending");
-    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: location.origin } });
+    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: location.origin, shouldCreateUser: false } });
     if (error) {
       setState("idle");
-      setError(error.status === 429 ? "Too many emails. Try again in a while." : error.message);
+      setError(error.status === 429 ? "Too many emails. Try again in a while." : /signups not allowed/i.test(error.message) ? "This board is private." : error.message);
     } else setState("sent");
   };
   return (
@@ -126,9 +126,6 @@ function SignIn({ startGuest }) {
           <div className="actions">
             <button className="primary" disabled={state === "sending"}>
               {state === "sending" ? "Sending" : "Send link"}
-            </button>
-            <button type="button" className="link" onClick={startGuest}>
-              Use without account
             </button>
           </div>
         </form>
@@ -223,27 +220,27 @@ function Boards({ store, session, navigate, signOut }) {
         <input ref={file} type="file" accept=".scap,.excalidraw,.json" hidden onChange={onFile} />
       </div>
       <p className="note rise late">
-        {session ? (
-          <>
-            {session.user.email} ·{" "}
-            <button className="link" onClick={signOut}>
-              Sign out
-            </button>
-          </>
-        ) : (
-          <>
-            Saved in this browser only ·{" "}
-            <button className="link" onClick={signOut}>
-              Sign in to sync
-            </button>
-          </>
-        )}
+        {session.user.email} ·{" "}
+        <a
+          className="link"
+          href="/usage"
+          onClick={(e) => {
+            e.preventDefault();
+            navigate("/usage");
+          }}
+        >
+          Usage
+        </a>{" "}
+        ·{" "}
+        <button className="link" onClick={signOut}>
+          Sign out
+        </button>
       </p>
     </section>
   );
 }
 
-export default function Home({ store, session, navigate, missing, startGuest, signOut }) {
+export default function Home({ store, session, denied, navigate, missing, signOut }) {
   const page = useRef(null);
   const fluid = useRef(null);
   useEffect(() => {
@@ -263,8 +260,15 @@ export default function Home({ store, session, navigate, missing, startGuest, si
         {missing && <p className="lead muted rise">Sign in to open that board.</p>}
         {store ? (
           <Boards store={store} session={session} navigate={navigate} signOut={signOut} />
+        ) : denied ? (
+          <p className="lead rise">
+            This board is private.{" "}
+            <button className="link" onClick={signOut}>
+              Sign out
+            </button>
+          </p>
         ) : supabase ? (
-          <SignIn startGuest={startGuest} />
+          <SignIn />
         ) : (
           <p className="error">Not configured.</p>
         )}

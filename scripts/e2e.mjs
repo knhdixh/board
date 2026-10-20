@@ -1,5 +1,5 @@
-// End-to-end check of the Scapple features in headless Chrome, using guest mode (no sign-in).
-// Usage: npm run dev, then: node scripts/e2e.mjs [http://localhost:5173] [shot-dir]
+// End-to-end check of the app in headless Chrome, signed in as a throwaway user.
+// Run it through scripts/e2e-cloud.mjs, which creates that user (see the README).
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -94,6 +94,7 @@ try {
     const { result } = await send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(path.join(SHOTS, name), Buffer.from(result.data, "base64"));
   };
+  const byIdMap = (els) => new Map(els.map((e) => [e.id, e]));
   const scene = () => js(`JSON.stringify(window.__board.getSceneElements())`).then(JSON.parse);
   const texts = async () => (await scene()).filter((e) => e.type === "text");
   const arrows = async () => (await scene()).filter((e) => e.type === "arrow");
@@ -102,20 +103,25 @@ try {
   await send("Page.enable");
   await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 860, deviceScaleFactor: 1, mobile: false });
   await send("Page.navigate", { url: BASE + "/" });
-  // Signed-in run: E2E_SESSION is a Supabase session (JSON) for a throwaway user.
-  if (process.env.E2E_SESSION) {
+  const signIn = async (session) => {
     const ref = new URL(process.env.VITE_SUPABASE_URL).hostname.split(".")[0];
     await until(`!!document.body`);
-    await js(`localStorage.setItem(${JSON.stringify(`sb-${ref}-auth-token`)}, ${JSON.stringify(process.env.E2E_SESSION)})`);
+    await js(`localStorage.setItem(${JSON.stringify(`sb-${ref}-auth-token`)}, ${JSON.stringify(session)})`);
     await send("Page.navigate", { url: BASE + "/" });
-    check("signed in", await until(`document.body.innerText.includes("Sign out")`, 10000));
+  };
+  // Someone who isn't on the allow-list gets nothing.
+  if (process.env.E2E_DENIED_SESSION) {
+    await signIn(process.env.E2E_DENIED_SESSION);
+    check("strangers are turned away", await until(`document.body.innerText.includes("This board is private")`, 10000));
+    await js(`localStorage.clear()`);
   }
+  await signIn(process.env.E2E_SESSION);
+  check("owner signs in", await until(`document.body.innerText.includes("Sign out")`, 10000));
   await until(`!!document.querySelector("form.signin, .rows, .actions .primary")`);
   await sleep(1500);
   await shot("board-home.png");
 
-  // Guest mode → new board
-  if (!process.env.E2E_SESSION) await js(`[...document.querySelectorAll("button")].find(b => b.textContent.includes("without account"))?.click()`);
+  // New board
   await until(`[...document.querySelectorAll("button")].some(b => b.textContent === "New board")`);
   await js(`[...document.querySelectorAll("button")].find(b => b.textContent === "New board").click()`);
   check("editor opens", await until(`!!window.__board`, 15000));
@@ -198,6 +204,44 @@ try {
   await sleep(300);
   await shot("board-styled.png");
 
+  // Background shape: wrap both bubbles, then drag it; the notes come along, and undo brings all back
+  {
+    const before = await scene();
+    const bubbles = before.filter((e) => e.type === "rectangle");
+    const sx = (x) => (x + st.sx) * z + st.ox;
+    const sy = (y) => (y + st.sy) * z + st.oy;
+    const minX = Math.min(...bubbles.map((b) => b.x)) - 20;
+    const minY = Math.min(...bubbles.map((b) => b.y)) - 20;
+    const maxX = Math.max(...bubbles.map((b) => b.x + b.width)) + 20;
+    const maxY = Math.max(...bubbles.map((b) => b.y + b.height)) + 20;
+    await drag(sx(minX), sy(minY), sx(maxX), sy(maxY)); // box-select
+    check("note bar offers a background", await until(`[...document.querySelectorAll(".notebar button")].some(b => b.textContent === "Background")`, 2000));
+    await js(`[...document.querySelectorAll(".notebar button")].find(b => b.textContent === "Background").click()`);
+    await sleep(400);
+    const bg = (await scene()).find((e) => e.customData?.background);
+    check("background shape sits behind the notes", !!bg && (await scene())[0].id === bg.id);
+    await click(600, 760);
+    await drag(sx(bg.x + 6), sy(bg.y + 6), sx(bg.x + 6) + 200, sy(bg.y + 6) + 40);
+    await sleep(400);
+    const after = byIdMap(await scene());
+    const shifted = bubbles.every((b) => Math.abs(after.get(b.id).x - (b.x + 200 / z)) < 2 && Math.abs(after.get(b.id).y - (b.y + 40 / z)) < 2);
+    check("dragging the background carries its notes", shifted);
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "z", code: "KeyZ", modifiers: 4, windowsVirtualKeyCode: 90, commands: ["undo"] });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: "z", code: "KeyZ", modifiers: 4 });
+    await sleep(400);
+    const undone = byIdMap(await scene());
+    check("one undo puts background and notes back", bubbles.every((b) => Math.abs(undone.get(b.id).x - b.x) < 2) && Math.abs(undone.get(bg.id).x - bg.x) < 2);
+    await click(600, 760);
+  }
+
+  // Copy as text (what you'd paste into Scrivener)
+  await send("Browser.grantPermissions", { permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"], origin: BASE });
+  await js(`[...document.querySelectorAll(".excalidraw button")].length`);
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "C", code: "KeyC", modifiers: 12, windowsVirtualKeyCode: 67 });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "C", code: "KeyC", modifiers: 12 });
+  const copied = await until(`navigator.clipboard.readText().then(t => t.includes("First idea") && t.includes("Second idea"))`, 3000);
+  check("⌘⇧C copies the board as text", copied);
+
   // Long text wraps at note width
   await dblclick(300, 600);
   await sleep(300);
@@ -233,6 +277,14 @@ try {
   check("imported board is named after the file", (await js(`document.querySelector(".topbar .title").value`)) === "ideas");
   await shot("board-imported.png");
 
+  // Usage dashboard
+  await send("Page.navigate", { url: BASE + "/usage" });
+  check("usage dashboard loads", await until(`document.querySelectorAll(".usage-row").length >= 7`, 10000));
+  const usageText = await js(`document.body.innerText`);
+  check("dashboard shows the limits", ["500 MB", "5.00 GB", "100.00 GB", "Idle time", "Vercel cron"].every((t) => usageText.includes(t)));
+  await sleep(2500);
+  await shot("board-usage.png");
+
   // Phone width: no horizontal scroll on the home page
   await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await send("Page.reload");
@@ -243,6 +295,13 @@ try {
   await send("Page.navigate", { url: BASE + "/" });
   await sleep(2500);
   check("no horizontal scroll at 390px", !(await js(`document.documentElement.scrollWidth > innerWidth`)));
+  await send("Page.navigate", { url: BASE + "/usage" });
+  await until(`document.querySelectorAll(".usage-row").length >= 7`, 10000);
+  await sleep(2500);
+  check("usage page fits at 390px", !(await js(`document.documentElement.scrollWidth > innerWidth`)));
+  await shot("board-usage-phone.png");
+  await send("Page.navigate", { url: BASE + "/" });
+  await sleep(2500);
   await shot("board-home-phone.png");
 
   check("no console errors", errors.length === 0, errors.slice(0, 3).join(" | "));

@@ -4,6 +4,7 @@ import {
   Excalidraw,
   MainMenu,
   WelcomeScreen,
+  exportToSvg,
   getSceneVersion,
   restoreElements,
   sceneCoordsToViewportCoords,
@@ -21,9 +22,11 @@ import {
   touch,
 } from "./scapple/elements.js";
 import { noteAt, rerouteBound, toggleConnection } from "./scapple/connect.js";
-import { row, stack, units } from "./scapple/layout.js";
+import { row, sameWidth, stack, units } from "./scapple/layout.js";
 import { STYLES, applyStyle, fitContainers } from "./scapple/styles.js";
-import { outline } from "./scapple/outline.js";
+import { outline, selectionOutline } from "./scapple/outline.js";
+import { addBackground, carry, contentsOf, isBackground } from "./scapple/background.js";
+import { exportScapple } from "./scapple/scap.js";
 
 // Scapple-like defaults: clean lines, a plain font, straight connectors.
 const DEFAULTS = {
@@ -64,7 +67,7 @@ function download(name, blob) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-export default function Editor({ id, store, navigate, session, signOut }) {
+export default function Editor({ id, store, navigate, signOut }) {
   const [board, setBoard] = useState(null);
   const [failed, setFailed] = useState("");
   useEffect(() => {
@@ -91,13 +94,12 @@ export default function Editor({ id, store, navigate, session, signOut }) {
       board={board}
       store={store}
       navigate={navigate}
-      session={session}
       signOut={signOut}
     />
   );
 }
 
-function Canvas({ board, store, navigate, session, signOut }) {
+function Canvas({ board, store, navigate, signOut }) {
   const [api, setApi] = useState(null);
   const [title, setTitle] = useState(board.title);
   const [status, setStatus] = useState("saved"); // saved | saving | offline | conflict
@@ -308,13 +310,27 @@ function Canvas({ board, store, navigate, session, signOut }) {
 
   /* ---------- drop a note onto another to connect ---------- */
   const drag = useRef(null);
+  // Move what sits on a dragged background shape by however far the shape has moved.
+  // EVENTUALLY folds these updates into the drag's own undo step.
+  const moveCarried = (d) => {
+    const all = api.getSceneElementsIncludingDeleted();
+    const cur = all.find((e) => e.id === d.carry.shape);
+    const old = d.snapshot.find((e) => e.id === d.carry.shape);
+    const dx = cur.x - old.x;
+    const dy = cur.y - old.y;
+    if (dx === d.carry.dx && dy === d.carry.dy) return;
+    d.carry.dx = dx;
+    d.carry.dy = dy;
+    api.updateScene({ elements: carry(all, d.snapshot, d.carry.ids, dx, dy), captureUpdate: CaptureUpdateAction.EVENTUALLY });
+  };
   // The note under `point` you could connect the dragged notes to, if any.
   const dropTarget = (d, point) => {
     const elements = api.getSceneElements();
     if (!d.exclude) {
       const us = units(elements, selectedIds());
       d.exclude = new Set(us.flatMap((u) => [...u.ids]));
-      d.from = us.map((u) => u.key).filter((k) => !k.startsWith("g:"));
+      const map = byId(elements);
+      d.from = us.map((u) => u.key).filter((k) => !k.startsWith("g:") && !isBackground(map.get(k)));
     }
     if (!d.from.length) return null;
     const t = noteAt(elements, point, d.exclude);
@@ -358,6 +374,10 @@ function Canvas({ board, store, navigate, session, signOut }) {
         pds.boxSelection.hasOccurred
       )
         return;
+      if (d.carry?.ids.size) {
+        moveCarried(d);
+        return;
+      }
       const target = dropTarget(
         d,
         viewportCoordsToSceneCoords(event, api.getAppState()),
@@ -409,6 +429,16 @@ function Canvas({ board, store, navigate, session, signOut }) {
       if (!api || !d || button !== "down") return;
       const appState = api.getAppState();
       if (!appState.selectedElementsAreBeingDragged) return;
+      // Dragging a background shape: the notes on it come along.
+      if (!d.carry) {
+        const sel = new Set(selectedIds());
+        const snap = byId(d.snapshot);
+        const shape = [...sel].find((i) => isBackground(snap.get(i)));
+        const ids = new Set();
+        if (shape) for (const i of contentsOf(d.snapshot, shape)) if (!sel.has(i)) ids.add(i);
+        d.carry = { shape, ids };
+      }
+      if (d.carry.ids.size) return moveCarried(d);
       const t = dropTarget(d, pointer);
       if (!t) return showDrop(null);
       const tl = sceneCoordsToViewportCoords(
@@ -470,6 +500,84 @@ function Canvas({ board, store, navigate, session, signOut }) {
     );
     toast("Disconnected");
   };
+
+  const actMeasured = (fn) => commit(fn(api.getSceneElementsIncludingDeleted(), selectedIds()), { measure: true });
+
+  const background = () => {
+    const r = addBackground(api.getSceneElementsIncludingDeleted(), selectedIds());
+    if (!r.id) return;
+    commit(r.elements);
+    api.updateScene({ appState: { selectedElementIds: { [r.id]: true } } });
+    toast("Background added. Drag it to move its notes");
+  };
+
+  const copyText = useCallback(async () => {
+    const ids = Object.keys(api.getAppState().selectedElementIds).filter((k) => api.getAppState().selectedElementIds[k]);
+    const els = api.getSceneElements();
+    const text = ids.length ? selectionOutline(els, ids) : outline(els, titleRef.current);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(ids.length ? "Copied as text" : "Board copied as text");
+    } catch {
+      toast("Couldn't reach the clipboard");
+    }
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return;
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.key.toLowerCase() !== "c") return;
+      if (api.getAppState().editingTextElement || e.target instanceof HTMLInputElement) return;
+      e.preventDefault();
+      e.stopPropagation();
+      copyText();
+    };
+    addEventListener("keydown", onKey, true);
+    return () => removeEventListener("keydown", onKey, true);
+  }, [api, copyText]);
+
+  const fullScreen = async () => {
+    if (document.fullscreenElement) return document.exitFullscreen();
+    api.updateScene({ appState: { zenModeEnabled: true } });
+    try {
+      await document.documentElement.requestFullscreen();
+      toast("Esc to leave full screen");
+    } catch {
+      toast("Focus mode on. Alt+Z to leave");
+    }
+  };
+  useEffect(() => {
+    if (!api) return;
+    const off = () => !document.fullscreenElement && api.updateScene({ appState: { zenModeEnabled: false } });
+    document.addEventListener("fullscreenchange", off);
+    return () => document.removeEventListener("fullscreenchange", off);
+  }, [api]);
+
+  const printBoard = async () => {
+    const svg = await exportToSvg({
+      elements: api.getSceneElements(),
+      appState: { ...api.getAppState(), exportBackground: true, exportWithDarkMode: false },
+      files: api.getFiles(),
+      exportPadding: 24,
+    });
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "position:fixed;width:0;height:0;border:0;opacity:0";
+    document.body.append(frame);
+    const doc = frame.contentDocument;
+    doc.open();
+    doc.write(
+      `<!doctype html><meta charset="utf-8"><title></title><style>@page{margin:12mm}html,body{margin:0}svg{display:block;width:100%;height:auto;max-height:100vh}</style>`,
+    );
+    doc.body.append(doc.importNode(svg, true));
+    doc.close();
+    setTimeout(() => {
+      frame.contentWindow.print();
+      setTimeout(() => frame.remove(), 1000);
+    }, 300);
+  };
+
+  const exportScap = () =>
+    download(`${titleRef.current || "board"}.scap`, new Blob([exportScapple(api.getSceneElementsIncludingDeleted())], { type: "application/xml" }));
 
   const exportOutline = () => {
     const md = outline(api.getSceneElements(), titleRef.current);
@@ -552,7 +660,14 @@ function Canvas({ board, store, navigate, session, signOut }) {
           </MainMenu.Item>
           <MainMenu.DefaultItems.SearchMenu />
           <MainMenu.Separator />
+          <MainMenu.Item onSelect={fullScreen}>Full screen</MainMenu.Item>
+          <MainMenu.Separator />
           <MainMenu.Item onSelect={exportOutline}>Export outline</MainMenu.Item>
+          <MainMenu.Item onSelect={exportScap}>Export Scapple file</MainMenu.Item>
+          <MainMenu.Item onSelect={copyText} shortcut="⌘⇧C">
+            Copy as text
+          </MainMenu.Item>
+          <MainMenu.Item onSelect={printBoard}>Print</MainMenu.Item>
           <MainMenu.DefaultItems.SaveAsImage />
           <MainMenu.DefaultItems.Export />
           <MainMenu.Separator />
@@ -561,9 +676,8 @@ function Canvas({ board, store, navigate, session, signOut }) {
           <MainMenu.DefaultItems.ClearCanvas />
           <MainMenu.Item onSelect={removeBoard}>Delete board</MainMenu.Item>
           <MainMenu.Separator />
-          <MainMenu.Item onSelect={signOut}>
-            {session ? "Sign out" : "Sign in to sync"}
-          </MainMenu.Item>
+          <MainMenu.Item onSelect={() => (flush(), navigate("/usage"))}>Usage</MainMenu.Item>
+          <MainMenu.Item onSelect={signOut}>Sign out</MainMenu.Item>
         </MainMenu>
         <WelcomeScreen>
           <WelcomeScreen.Hints.MenuHint />
@@ -575,6 +689,7 @@ function Canvas({ board, store, navigate, session, signOut }) {
               <p className="muted">
                 Hold ⌘ while dropping for an arrow. Drop again to disconnect.
               </p>
+              <p className="muted">Select notes to stack them, style them or put a background behind them.</p>
             </div>
           </WelcomeScreen.Center>
         </WelcomeScreen>
@@ -602,10 +717,15 @@ function Canvas({ board, store, navigate, session, signOut }) {
             <>
               <button onClick={() => act(stack)}>Stack</button>
               <button onClick={() => act(row)}>Row</button>
+              <button onClick={() => actMeasured(sameWidth)}>Same width</button>
               <button onClick={connectChain}>Connect</button>
               <button onClick={disconnectAll}>Disconnect</button>
             </>
           )}
+          <button onClick={background}>Background</button>
+          <button onClick={copyText} title="⌘⇧C">
+            Copy text
+          </button>
         </div>
       )}
     </div>

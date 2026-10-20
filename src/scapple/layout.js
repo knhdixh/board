@@ -85,3 +85,27 @@ export function separate(elements, selectedIds, gap = 8) {
   }
   return moves.length ? moveUnits(elements, moves) : elements;
 }
+
+/**
+ * Give the selected notes the width of the widest one (Scapple's "Make Same Width").
+ * Free text gets a fixed wrapping width; shapes are resized and their text re-wraps.
+ * Text heights change, so the editor re-measures afterwards.
+ */
+export function sameWidth(elements, selectedIds) {
+  const us = units(elements, selectedIds).filter((u) => !u.key.startsWith("g:"));
+  if (us.length < 2) return elements;
+  const w = Math.max(...us.map((u) => u.box.w));
+  const ids = new Set(us.map((u) => u.key));
+  const map = new Map(elements.map((e) => [e.id, e]));
+  return elements.map((el) => {
+    if (ids.has(el.id)) {
+      if (el.type === "text") return touch(el, { width: w, autoResize: false });
+      return touch(el, { width: w });
+    }
+    if (el.type === "text" && ids.has(el.containerId)) {
+      // Let the text re-wrap to its container's new width.
+      return touch(el, { text: el.originalText ?? el.text, width: Math.min(el.width, w) });
+    }
+    return map.get(el.id);
+  });
+}

@@ -1,5 +1,5 @@
 // Import Scapple documents (.scap, plain XML) as Excalidraw elements.
-import { INK, LINE_HEIGHT, PAD, byId, newArrow, newRect, newText, touch } from "./elements.js";
+import { INK, LINE_HEIGHT, PAD, boundTextOf, byId, isNote, newArrow, newRect, newText, touch } from "./elements.js";
 import { routeArrow } from "./connect.js";
 
 const num = (s, d = 0) => {
@@ -78,6 +78,7 @@ export function importScapple(xml, parse = (s) => new DOMParser().parseFromStrin
         strokeColor: weight ? color(border.textContent) ?? INK : "transparent",
         roundness: (s.getAttribute("Type") ?? "").includes("Rect") && !(s.getAttribute("Type") ?? "").includes("Rounded") ? null : { type: 3 },
         opacity: fill ? 60 : 100,
+        customData: { background: true },
       }),
     );
     const title = childText(s, "String").trim();
@@ -179,4 +180,87 @@ export function importScapple(xml, parse = (s) => new DOMParser().parseFromStrin
   const map = byId(elements);
   // Connectors sit between the background shapes and the notes.
   return [...background, ...arrows.map((ar) => routeArrow(ar, map)), ...elements.slice(background.length)];
+}
+
+const hexToScapple = (hex) => {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex ?? "");
+  if (!m) return null;
+  return [0, 2, 4].map((i) => (parseInt(m[1].slice(i, i + 2), 16) / 255).toFixed(3)).join(" ");
+};
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const ranges = (ids) => {
+  const sorted = [...new Set(ids)].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    out.push(j > i ? `${sorted[i]}-${sorted[j]}` : `${sorted[i]}`);
+    i = j;
+  }
+  return out.join(", ");
+};
+
+/**
+ * Write a board as a Scapple document, so it opens in Scapple (and from there drags into Scrivener).
+ * Notes with text become notes, shapes marked as background become background shapes, arrows become connections.
+ */
+export function exportScapple(elements) {
+  const map = byId(elements);
+  const live = elements.filter((e) => !e.isDeleted);
+  const notes = live.filter((e) => isNote(e) && e.type !== "image" && !e.customData?.background && (e.type === "text" ? e.text : boundTextOf(e, map)));
+  const shapes = live.filter((e) => e.customData?.background);
+  const sid = new Map(notes.map((n, i) => [n.id, i]));
+  const links = new Map(notes.map((n) => [n.id, { connected: [], points: [] }]));
+  for (const a of live) {
+    if (a.type !== "arrow") continue;
+    const s = a.startBinding?.elementId;
+    const e = a.endBinding?.elementId;
+    if (!sid.has(s) || !sid.has(e)) continue;
+    links.get(s).connected.push(sid.get(e));
+    links.get(e).connected.push(sid.get(s));
+    if (a.endArrowhead) links.get(s).points.push(sid.get(e));
+    if (a.startArrowhead) links.get(e).points.push(sid.get(s));
+  }
+  const pt = (v) => (v / PT).toFixed(1);
+  const noteXml = notes.map((n) => {
+    const t = n.type === "text" ? n : boundTextOf(n, map);
+    const shape = n.type === "text" ? null : n;
+    const fill = shape && hexToScapple(shape.backgroundColor);
+    const border = shape && hexToScapple(shape.strokeColor);
+    const { connected, points } = links.get(n.id);
+    const textColor = hexToScapple(t.strokeColor);
+    return [
+      `    <Note ID="${sid.get(n.id)}" FontSize="${(t.fontSize / PT).toFixed(1)}" Position="${pt(t.x)},${pt(t.y)}" Width="${pt(t.width)}">`,
+      "      <Appearance>",
+      `        <Alignment>${t.textAlign === "center" ? "Center" : t.textAlign === "right" ? "Right" : "Left"}</Alignment>`,
+      border ? `        <Border Weight="${shape.strokeWidth}" Style="${shape.roundness ? "Rounded" : "Square"}">${border}</Border>` : "",
+      fill ? `        <Fill>${fill}</Fill>` : "",
+      textColor ? `        <TextColor>${textColor}</TextColor>` : "",
+      "      </Appearance>",
+      `      <String>${esc(t.originalText ?? t.text)}</String>`,
+      connected.length ? `      <ConnectedNoteIDs>${ranges(connected)}</ConnectedNoteIDs>` : "",
+      points.length ? `      <PointsToNoteIDs>${ranges(points)}</PointsToNoteIDs>` : "",
+      "    </Note>",
+    ].filter(Boolean).join("\n");
+  });
+  const shapeXml = shapes.map((s, i) => {
+    const fill = hexToScapple(s.backgroundColor);
+    return [
+      `    <Shape ID="${i}" Type="RoundedRectangle" Position="${pt(s.x)},${pt(s.y)}" Width="${pt(s.width)}" Height="${pt(s.height)}">`,
+      `      <Appearance>${fill ? `<Fill>${fill}</Fill>` : ""}</Appearance>`,
+      "    </Shape>",
+    ].join("\n");
+  });
+  return [
+    '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
+    '<ScappleDocument Version="1.2">',
+    "  <Notes>",
+    ...noteXml,
+    "  </Notes>",
+    "  <BackgroundShapes>",
+    ...shapeXml,
+    "  </BackgroundShapes>",
+    "</ScappleDocument>",
+    "",
+  ].join("\n");
 }

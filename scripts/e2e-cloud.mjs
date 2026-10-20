@@ -26,7 +26,7 @@ const stranger = await user("stranger");
 try {
   const allow = await admin.from("allowed_users").insert({ email: owner.email });
   if (allow.error) throw allow.error;
-  const r = spawnSync("node", ["scripts/e2e.mjs", process.argv[2] ?? "http://localhost:5173", process.argv[3] ?? "/tmp"], {
+  const r = spawnSync("node", [process.env.E2E_SCRIPT ?? "scripts/e2e.mjs", process.argv[2] ?? "http://localhost:5173", process.argv[3] ?? "/tmp"], {
     stdio: "inherit",
     env: { ...process.env, E2E_SESSION: JSON.stringify(owner.session), E2E_DENIED_SESSION: JSON.stringify(stranger.session) },
   });

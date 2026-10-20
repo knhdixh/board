@@ -2,6 +2,7 @@
 // Built-in styles take their colours from the board's theme; saved styles keep the colours they were saved with.
 import { PAD, boundTextOf, byId, newRect, noteFor, touch } from "./elements.js";
 import { separate } from "./layout.js";
+import { isCell } from "./table.js";
 
 /** Built-in styles. `shape: null` = no visible shape, `"keep"` = leave the shape alone. */
 export const STYLES = [
@@ -110,12 +111,18 @@ export function applyStyle(elements, selectedIds, style, theme) {
   let measure = false;
   for (const id of targets) {
     let el = byId(out).get(id);
-    if (el.type === "text" && shape && shape !== "keep") {
+    if (isCell(el)) {
+      // A table cell keeps its borders: a style only changes its fill (none = the paper colour) and text.
+      if (shape !== "keep") {
+        const fill = shape?.backgroundColor && shape.backgroundColor !== "transparent" ? shape.backgroundColor : theme.bg;
+        out = out.map((e) => (e.id === el.id ? touch(e, { backgroundColor: fill }) : e));
+      }
+    } else if (el.type === "text" && shape && shape !== "keep") {
       const wrapped = wrapText(out, id);
       out = wrapped.elements;
       el = byId(out).get(wrapped.id);
     }
-    if (SHAPES.has(el.type) && shape !== "keep") {
+    if (SHAPES.has(el.type) && shape !== "keep" && !isCell(el)) {
       const changes = shape === null ? { strokeColor: "transparent", backgroundColor: "transparent" } : shape;
       out = out.map((e) => (e.id === el.id ? touch(e, { ...changes, roughness: 0 }) : e));
     }
@@ -127,7 +134,7 @@ export function applyStyle(elements, selectedIds, style, theme) {
   }
   // New bubbles are bigger than the text they wrap; don't let them land on each other.
   const restyled = new Set(
-    out.filter((e) => targets.has(e.id) || targets.has(e.boundElements?.find((b) => b.type === "text")?.id)).map((e) => e.id),
+    out.filter((e) => !isCell(e) && (targets.has(e.id) || targets.has(e.boundElements?.find((b) => b.type === "text")?.id))).map((e) => e.id),
   );
   return { elements: restyled.size > 1 ? separate(out, [...restyled]) : out, measure };
 }

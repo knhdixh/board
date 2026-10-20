@@ -1,7 +1,7 @@
 // Export a board as a Markdown outline: connected notes nest under the note they hang from.
 import { byId, isNote, noteText } from "./elements.js";
 import { neighbours } from "./connect.js";
-import { isCell, markdownTable, tableRows } from "./table.js";
+import { isCell, markdownTable, tableOf, tableRows } from "./table.js";
 
 const readingOrder = (a, b) => a.y - b.y || a.x - b.x;
 
@@ -11,9 +11,9 @@ export function outline(elements, title = "") {
   const tables = new Map();
   for (const el of elements) {
     if (!isCell(el)) continue;
-    const t = tables.get(el.customData.table);
+    const t = tables.get(tableOf(el));
     if (!t || el.customData.row < t.customData.row || (el.customData.row === t.customData.row && el.customData.col < t.customData.col))
-      tables.set(el.customData.table, el);
+      tables.set(tableOf(el), el);
   }
   const tableText = new Map();
   for (const [table, first] of tables) {

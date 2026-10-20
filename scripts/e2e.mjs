@@ -487,6 +487,48 @@ try {
   await look(`(e) => e.customData?.table`);
   await shot("board-table-wider.png");
 
+  // Clicking: inside a cell picks the table, double-clicking a cell writes in it, Delete empties a cell
+  const onScreen = async (r, c) =>
+    js(`(() => { const a = window.__board.getAppState(), z = a.zoom.value; const e = window.__board.getSceneElements().find(e => e.customData?.table && e.customData.row === ${r} && e.customData.col === ${c}); return { x: (e.x + e.width / 2 + a.scrollX) * z + a.offsetLeft, y: (e.y + e.height / 2 + a.scrollY) * z + a.offsetTop, id: e.id }; })()`);
+  const barHas = (label) => js(`[...document.querySelectorAll(".notebar button")].some(b => b.textContent === ${JSON.stringify(label)})`);
+  await js(`window.__board.updateScene({ appState: { selectedElementIds: {}, editingGroupId: null } })`);
+  await sleep(200);
+  const cell32 = await onScreen(3, 2);
+  await click(cell32.x, cell32.y);
+  await sleep(300);
+  check("clicking inside a cell picks the table", (await js(`Object.keys(window.__board.getAppState().selectedElementIds).length`)) >= 16 && (await barHas("+ Row")) && !(await barHas("Stack")));
+  await js(`[...document.querySelectorAll(".notebar button")].find(b => b.textContent === "+ Row").click()`);
+  await sleep(500);
+  check("+ Row on the table adds one at the bottom", (await scene()).filter((e) => e.customData?.table && e.customData.row === 4).length === 4);
+  await dblclick(cell32.x, cell32.y);
+  await sleep(400);
+  check("double-clicking a cell writes in it", await until(`window.__board.getSceneElements().find(e => e.id === window.__board.getAppState().editingTextElement?.containerId)?.customData?.row === 3`, 2000));
+  await type("Dee");
+  await key("Escape");
+  await sleep(500);
+  check("the cell is picked after writing, with its row and column buttons", (await barHas("− Row")) && (await barHas("+ Column")));
+  await key("Backspace");
+  await sleep(400);
+  const cleared = await scene();
+  const deeCell = cleared.find((e) => e.id === cell32.id);
+  check("Delete empties the cell and keeps it", !!deeCell && !deeCell.isDeleted && !cleared.find((t) => t.containerId === cell32.id)?.originalText); // Excalidraw drops the empty text
+  await js(`window.__board.updateScene({ appState: { selectedElementIds: {}, editingGroupId: null } })`);
+
+  // The Table tool next to the shapes: pick it, click the board, and a table starts there
+  check("Table tool sits in the toolbar right after the shapes", await js(`document.querySelector('[data-testid="toolbar-table"]')?.closest(".table-tool-slot")?.previousElementSibling?.querySelector('[data-testid="toolbar-eraser"]') != null`));
+  const before = (await scene()).filter((e) => e.customData?.table).length;
+  await js(`document.querySelector('[data-testid="toolbar-table"]').click()`);
+  await sleep(200);
+  check("picking it arms the table tool", (await js(`window.__board.getAppState().activeTool.customType`)) === "table" && (await js(`document.querySelector('[data-testid="toolbar-table"]').checked`)));
+  await click(700, 650);
+  await sleep(600);
+  const placed = (await scene()).filter((e) => e.customData?.table);
+  const p0 = await js(`(() => { const a = window.__board.getAppState(), z = a.zoom.value; const id = a.editingTextElement?.containerId; const e = window.__board.getSceneElements().find(e => e.id === id); return e && { x: (e.x + a.scrollX) * z + a.offsetLeft, y: (e.y + a.scrollY) * z + a.offsetTop }; })()`);
+  check("clicking the board drops a table there, ready to write", placed.length === before + 9 && p0 && Math.abs(p0.x - 700) < 3 && Math.abs(p0.y - 650) < 3, JSON.stringify(p0));
+  check("and the tool lets go", (await js(`window.__board.getAppState().activeTool.type`)) === "selection");
+  await key("Escape");
+  await sleep(300);
+
   // A table typed in a note lines up in a monospace font
   await js(`window.__board.updateScene({ appState: { selectedElementIds: {}, editingGroupId: null, scrollX: -4000, scrollY: -1200 } })`);
   await dblclick(300, 400);

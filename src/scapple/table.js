@@ -13,6 +13,12 @@ const TEXT_INSET = 5; // Excalidraw's padding for text inside a shape
 
 export const isCell = (el) => !!el && !el.isDeleted && !!el.customData?.table;
 
+/**
+ * Which table a cell is in. A copy of a table (duplicate, copy and paste) keeps the cells' table id but gets a
+ * new group, so the group tells the two apart.
+ */
+export const tableOf = (cell) => `${cell.customData.table}:${cell.groupIds?.[0] ?? ""}`;
+
 /** A new rows × cols table with its top-left corner at (x, y). Returns { elements, id }. */
 export function newTable(x, y, rows = 3, cols = 3, theme) {
   const table = randomId();
@@ -30,7 +36,7 @@ function newCell(table, row, col, x, y, width, height, theme, groupIds = [table]
     height,
     roundness: null,
     strokeColor: theme?.line ?? "#868e96",
-    backgroundColor: "transparent",
+    backgroundColor: theme?.bg ?? "#ffffff", // filled with the paper colour, so a click anywhere in the cell lands on it
     groupIds,
     customData: { table, row, col },
   });
@@ -50,9 +56,9 @@ function newCell(table, row, col, x, y, width, height, theme, groupIds = [table]
   return [rect, text];
 }
 
-/** The cells of a table, by id, and its size. */
-function cellsOf(elements, table) {
-  const cells = elements.filter((e) => isCell(e) && e.customData.table === table);
+/** The cells of a table (see tableOf), and its size. */
+export function cellsOf(elements, table) {
+  const cells = elements.filter((e) => isCell(e) && tableOf(e) === table);
   const rows = cells.length ? Math.max(...cells.map((c) => c.customData.row)) + 1 : 0;
   const cols = cells.length ? Math.max(...cells.map((c) => c.customData.col)) + 1 : 0;
   return { cells, rows, cols };
@@ -83,7 +89,7 @@ const near = (a, b) => Math.abs(a - b) < 0.5;
  * the same array when nothing moved; `measure` means text has to re-wrap to a new cell width.
  */
 export function relayoutTables(elements) {
-  const tables = new Set(elements.filter(isCell).map((e) => e.customData.table));
+  const tables = new Set(elements.filter(isCell).map(tableOf));
   if (!tables.size) return { elements, measure: false };
   const map = byId(elements);
   const changes = new Map();
@@ -137,7 +143,7 @@ function renumber(elements, table, axis, fn) {
   const gone = new Set();
   const moved = new Map();
   for (const el of elements) {
-    if (!isCell(el) || el.customData.table !== table) continue;
+    if (!isCell(el) || tableOf(el) !== table) continue;
     const n = fn(el.customData[axis]);
     if (n === null) {
       gone.add(el.id);
@@ -159,7 +165,8 @@ export function addRow(elements, cellId, after = true, theme) {
   const map = byId(elements);
   const cell = cellFor(map.get(cellId), map);
   if (!cell) return { elements, id: null };
-  const { table, row } = cell.customData;
+  const table = tableOf(cell);
+  const { row } = cell.customData;
   const at = after ? row + 1 : row;
   let out = renumber(elements, table, "row", (r) => (r >= at ? r + 1 : r));
   const { cells, cols } = cellsOf(out, table);
@@ -169,7 +176,7 @@ export function addRow(elements, cellId, after = true, theme) {
     const above = ref.find((e) => e.customData.col === c);
     const x = above?.x ?? cell.x;
     const y = after ? cell.y + cell.height : cell.y;
-    const made = newCell(table, at, c, x, y, above?.width ?? CELL_W, CELL_H, theme, cell.groupIds);
+    const made = newCell(cell.customData.table, at, c, x, y, above?.width ?? CELL_W, CELL_H, theme, cell.groupIds);
     if (c === cell.customData.col) id = made[0].id;
     out = [...out, ...made];
   }
@@ -181,7 +188,8 @@ export function addColumn(elements, cellId, after = true, theme) {
   const map = byId(elements);
   const cell = cellFor(map.get(cellId), map);
   if (!cell) return { elements, id: null };
-  const { table, col } = cell.customData;
+  const table = tableOf(cell);
+  const { col } = cell.customData;
   const at = after ? col + 1 : col;
   let out = renumber(elements, table, "col", (c) => (c >= at ? c + 1 : c));
   const { cells, rows } = cellsOf(out, table);
@@ -190,7 +198,7 @@ export function addColumn(elements, cellId, after = true, theme) {
   for (let r = 0; r < rows; r++) {
     const beside = ref.find((e) => e.customData.row === r);
     const x = after ? cell.x + cell.width : cell.x;
-    const made = newCell(table, r, at, x, beside?.y ?? cell.y, CELL_W, beside?.height ?? CELL_H, theme, cell.groupIds);
+    const made = newCell(cell.customData.table, r, at, x, beside?.y ?? cell.y, CELL_W, beside?.height ?? CELL_H, theme, cell.groupIds);
     if (r === cell.customData.row) id = made[0].id;
     out = [...out, ...made];
   }
@@ -202,9 +210,8 @@ export function removeLine(elements, cellId, axis) {
   const map = byId(elements);
   const cell = cellFor(map.get(cellId), map);
   if (!cell) return elements;
-  const { table } = cell.customData;
   const at = cell.customData[axis];
-  return relayoutTables(renumber(elements, table, axis, (n) => (n === at ? null : n > at ? n - 1 : n))).elements;
+  return relayoutTables(renumber(elements, tableOf(cell), axis, (n) => (n === at ? null : n > at ? n - 1 : n))).elements;
 }
 
 /** The cell next to `cellId` in reading order (`step` 1 or -1), or null at either end. */
@@ -212,9 +219,29 @@ export function nextCell(elements, cellId, step = 1) {
   const map = byId(elements);
   const cell = cellFor(map.get(cellId), map);
   if (!cell) return null;
-  const { cells } = cellsOf(elements, cell.customData.table);
+  const { cells } = cellsOf(elements, tableOf(cell));
   const order = cells.sort((a, b) => a.customData.row - b.customData.row || a.customData.col - b.customData.col);
   return order[order.findIndex((c) => c.id === cell.id) + step] ?? null;
+}
+
+/** The last cell of a table (bottom right), for adding rows and columns at the end. */
+export function lastCell(elements, table) {
+  const { cells } = cellsOf(elements, table);
+  return cells.sort((a, b) => b.customData.row - a.customData.row || b.customData.col - a.customData.col)[0] ?? null;
+}
+
+/** Give cells the paper colour if they have no fill (tables made before cells were filled). */
+export function fillCells(elements, bg) {
+  let changed = false;
+  const out = elements.map((e) => (isCell(e) && e.backgroundColor === "transparent" ? ((changed = true), touch(e, { backgroundColor: bg })) : e));
+  return changed ? out : elements;
+}
+
+/** Empty the cells' text, leaving the cells in place (Delete on a cell clears it, like a spreadsheet). */
+export function clearCells(elements, ids) {
+  const map = byId(elements);
+  const texts = new Set([...ids].map((id) => cellFor(map.get(id), map)).filter(Boolean).map((c) => textOf(c, map)?.id).filter(Boolean));
+  return elements.map((e) => (texts.has(e.id) ? touch(e, { text: "", originalText: "" }) : e));
 }
 
 /** A table's text as rows of cells, for outlines and copying. */

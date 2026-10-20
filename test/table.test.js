@@ -6,6 +6,8 @@ import {
   MONO,
   addColumn,
   addRow,
+  clearCells,
+  fillCells,
   formatTextTables,
   hasTextTable,
   isCell,
@@ -13,6 +15,7 @@ import {
   nextCell,
   relayoutTables,
   removeLine,
+  tableOf,
   tableRows,
   tidyTextTable,
 } from "../src/scapple/table.js";
@@ -20,6 +23,8 @@ import { boxesOf } from "../src/scapple/stacks.js";
 import { outline } from "../src/scapple/outline.js";
 import { importScapple } from "../src/scapple/scap.js";
 import { restack } from "../src/scapple/stacks.js";
+import { STYLES, applyStyle } from "../src/scapple/styles.js";
+import { DEFAULT_THEME, THEMES, retheme } from "../src/scapple/themes.js";
 
 const cells = (els) => els.filter(isCell);
 const at = (els, row, col) => cells(els).find((c) => c.customData.row === row && c.customData.col === col);
@@ -84,7 +89,8 @@ describe("grid tables", () => {
   });
 
   it("writes tables as Markdown in the outline, and keeps them out of magnetic stacks", () => {
-    let { elements, id } = newTable(0, 0, 2, 2);
+    let { elements } = newTable(0, 0, 2, 2);
+    const id = tableOf(cells(elements)[0]);
     const fill = (row, col, text) => {
       const t = textIn(elements, at(elements, row, col));
       elements = elements.map((e) => (e.id === t.id ? touch(e, { text, originalText: text }) : e));
@@ -96,6 +102,47 @@ describe("grid tables", () => {
     expect(tableRows(elements, id)).toEqual([["Name", "Age"], ["Ann", "31"]]);
     expect(outline(elements)).toContain("| Name | Age |\n|------|-----|\n| Ann  | 31  |");
     expect(boxesOf(elements).size).toBe(0);
+  });
+});
+
+describe("tables with the rest of the board", () => {
+  it("keeps a copied table apart from the original", () => {
+    const { elements } = newTable(0, 0, 2, 2);
+    const group = "copy-group";
+    const copy = elements.map((e) => ({ ...e, id: e.id + "-copy", x: e.x + 500, groupIds: [group], boundElements: e.boundElements?.map((b) => ({ ...b, id: b.id + "-copy" })), containerId: e.containerId && e.containerId + "-copy" }));
+    const both = [...elements, ...copy];
+    expect(relayoutTables(both).elements).toBe(both); // neither is pulled onto the other
+    const r = addRow(both, at(copy, 0, 0).id, true);
+    expect(cells(r.elements).filter((c) => c.groupIds[0] === group)).toHaveLength(6);
+    expect(cells(r.elements).filter((c) => c.groupIds[0] !== group)).toHaveLength(4);
+  });
+
+  it("a style fills a cell but keeps its border", () => {
+    const { elements } = newTable(0, 0, 2, 2, DEFAULT_THEME);
+    const c = at(elements, 0, 0);
+    const yellow = applyStyle(elements, [c.id], STYLES.find((s) => s.key === "yellow"), DEFAULT_THEME).elements;
+    expect(byId(yellow).get(c.id)).toMatchObject({ backgroundColor: DEFAULT_THEME.fills.yellow, strokeColor: c.strokeColor, roundness: null, x: c.x, y: c.y });
+    const plain = applyStyle(yellow, [c.id], STYLES.find((s) => s.key === "plain"), DEFAULT_THEME).elements;
+    expect(byId(plain).get(c.id)).toMatchObject({ backgroundColor: DEFAULT_THEME.bg, strokeColor: c.strokeColor });
+  });
+
+  it("cells are filled with the paper, and follow it to another theme", () => {
+    const { elements } = newTable(0, 0, 1, 2, DEFAULT_THEME);
+    expect(cells(elements).every((c) => c.backgroundColor === DEFAULT_THEME.bg)).toBe(true);
+    const night = THEMES.find((t) => t.key === "night");
+    const dark = retheme(elements, night, touch);
+    expect(cells(dark).every((c) => c.backgroundColor === night.bg && c.strokeColor === night.line)).toBe(true);
+    const old = elements.map((e) => (isCell(e) ? { ...e, backgroundColor: "transparent" } : e));
+    expect(cells(fillCells(old, "#abcdef")).every((c) => c.backgroundColor === "#abcdef")).toBe(true);
+  });
+
+  it("Delete on a cell empties it and leaves the cell", () => {
+    let { elements } = newTable(0, 0, 1, 2);
+    const t = textIn(elements, at(elements, 0, 1));
+    elements = elements.map((e) => (e.id === t.id ? touch(e, { text: "x", originalText: "x" }) : e));
+    const out = clearCells(elements, [at(elements, 0, 1).id]);
+    expect(cells(out)).toHaveLength(2);
+    expect(textIn(out, at(out, 0, 1)).originalText).toBe("");
   });
 });
 

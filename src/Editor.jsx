@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   CaptureUpdateAction,
   Excalidraw,
@@ -36,16 +37,23 @@ import { addBackground, carry, contentsOf, isBackground } from "./scapple/backgr
 import { exportScapple } from "./scapple/scap.js";
 import { enterInList } from "./scapple/lists.js";
 import {
+  CELL_H,
+  CELL_W,
   addColumn,
   addRow,
   blankTextTable,
   cellFor,
+  cellsOf,
+  clearCells,
+  fillCells,
   isCell,
+  lastCell,
   monoWidth,
   newTable,
   nextCell,
   relayoutTables,
   removeLine,
+  tableOf,
   tidyTextTable,
 } from "./scapple/table.js";
 
@@ -126,7 +134,7 @@ function Canvas({ board, store, navigate, signOut }) {
   const [api, setApi] = useState(null);
   const [title, setTitle] = useState(board.title);
   const [status, setStatus] = useState("saved"); // saved | saving | offline | conflict
-  const [selection, setSelection] = useState({ notes: 0, ids: [], cell: null });
+  const [selection, setSelection] = useState({ notes: 0, ids: [], cell: null, table: null });
   const dropBox = useRef(null); // outline around the note you'd connect to
   const preview = useRef(null); // dashed line from the dragged note to that note
   const [theme, setTheme] = useState(() => themeFor(board.scene?.appState?.viewBackgroundColor ?? DEFAULT_THEME.bg));
@@ -310,7 +318,7 @@ function Canvas({ board, store, navigate, signOut }) {
 
   // Line tables up; when a column changed width its text re-wraps, which can make rows taller, so go again.
   const settleTables = (all) => {
-    let r = relayoutTables(all);
+    let r = relayoutTables(fillCells(all, themeRef.current.bg));
     for (let i = 0; i < 3 && r.measure; i++)
       r = relayoutTables(restoreElements(r.elements, null, { repairBindings: true, refreshDimensions: true }));
     return r.elements;
@@ -462,7 +470,12 @@ function Canvas({ board, store, navigate, signOut }) {
       boxes.current = boxesOf(elements);
 
       // Tables: a cell grew or was resized, so its row and column follow.
-      if (!appState.selectedElementsAreBeingDragged && !appState.resizingElement && !appState.editingTextElement && relayoutTables(elements).elements !== elements)
+      if (
+        !appState.selectedElementsAreBeingDragged &&
+        !appState.resizingElement &&
+        !appState.editingTextElement &&
+        (relayoutTables(elements).elements !== elements || fillCells(elements, appState.viewBackgroundColor) !== elements)
+      )
         setTimeout(() => {
           const all = api.getSceneElementsIncludingDeleted();
           const next = settleTables(all);
@@ -472,7 +485,7 @@ function Canvas({ board, store, navigate, signOut }) {
       let count = 0;
       const tables = new Set();
       for (const el of elements)
-        if (isCell(el)) tables.add(el.customData.table);
+        if (isCell(el)) tables.add(tableOf(el));
         else if (isNote(el) && !el.customData?.background) count++;
       setNoteCount(count + tables.size);
 
@@ -499,16 +512,19 @@ function Canvas({ board, store, navigate, signOut }) {
       if (sk !== selKey.current) {
         selKey.current = sk;
         const map = byId(elements);
-        const notes = editingId
-          ? 0
-          : new Set(
-              ids
-                .map((i) => noteFor(map.get(i), map))
-                .filter(isNote)
-                .map((n) => n.id),
-            ).size;
-        const cells = editingId ? [] : [...new Set(ids.map((i) => cellFor(map.get(i), map)?.id).filter(Boolean))];
-        setSelection({ notes, ids, cell: cells.length === 1 ? cells[0] : null });
+        const picked = editingId ? [] : [...new Set(ids.map((i) => noteFor(map.get(i), map)).filter(isNote))];
+        const notes = new Set(picked.map((n) => (isCell(n) ? "t:" + tableOf(n) : n.id))).size;
+        const cells = [...new Set(picked.filter(isCell))];
+        const tables = new Set(cells.map(tableOf));
+        // One cell (to add rows and columns next to it), or one whole table (to add them at the end).
+        const onlyTable = tables.size === 1 && cells.length === picked.length ? [...tables][0] : null;
+        const whole = onlyTable && cellsOf(elements, onlyTable).cells.length === cells.length;
+        setSelection({
+          notes,
+          ids,
+          cell: onlyTable && !whole && cells.length === 1 ? cells[0].id : null,
+          table: whole ? lastCell(elements, onlyTable).id : null,
+        });
         if (notes) lastNotes.current = { ids, at: 0 };
         else if (lastNotes.current && !lastNotes.current.at) lastNotes.current.at = Date.now();
       }
@@ -762,33 +778,119 @@ function Canvas({ board, store, navigate, signOut }) {
   const editCell = (id) => {
     const cell = api.getSceneElements().find((e) => e.id === id);
     if (!cell) return;
-    select(id, cell.groupIds.at(-1) ?? null);
+    select(id, cell.groupIds[0] ?? null);
     setTimeout(() => document.querySelector(".excalidraw")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true })), 30);
   };
 
-  const insertTable = (rows = 3, cols = 3) => {
-    const p = center();
-    const t = newTable(Math.round(p.x - (cols * 120) / 2), Math.round(p.y - (rows * 36) / 2), rows, cols, themeRef.current);
+  // A table with its top-left corner at `at` (scene coordinates), or in the middle of the screen.
+  const insertTable = (at, rows = 3, cols = 3) => {
+    const c = center();
+    const p = at ?? { x: c.x - (cols * CELL_W) / 2, y: c.y - (rows * CELL_H) / 2 };
+    const t = newTable(Math.round(p.x), Math.round(p.y), rows, cols, themeRef.current);
     commit([...api.getSceneElementsIncludingDeleted(), ...t.elements]);
     editCell(t.elements[0].id);
-    toast("Table added. Tab moves to the next cell");
+    toast("Table added. Tab for the next cell, double-click any cell to write");
   };
+
+  // Double-click a cell to write in it straight away (Excalidraw would first only open the table's group).
+  useEffect(() => {
+    if (!api) return;
+    const onDbl = (e) => {
+      if (e.metaKey || e.ctrlKey || e.target.tagName !== "CANVAS" || api.getAppState().editingTextElement) return;
+      const p = viewportCoordsToSceneCoords(e, api.getAppState());
+      const cell = api
+        .getSceneElements()
+        .findLast((el) => isCell(el) && p.x >= el.x && p.x <= el.x + el.width && p.y >= el.y && p.y <= el.y + el.height);
+      if (!cell) return;
+      e.stopPropagation();
+      e.preventDefault();
+      editCell(cell.id);
+    };
+    const root = document.querySelector(".editor");
+    root?.addEventListener("dblclick", onDbl, true);
+    return () => root?.removeEventListener("dblclick", onDbl, true);
+  }, [api]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The Table tool in Excalidraw's toolbar: pick it, then click where the table goes.
+  const [toolbar, setToolbar] = useState(null);
+  const [placing, setPlacing] = useState(false);
+  const pickTableTool = () => {
+    api.setActiveTool({ type: "custom", customType: "table" });
+    setPlacing(true);
+  };
+  useEffect(() => {
+    if (!api) return;
+    // Excalidraw redraws its toolbar now and then; keep a slot for the button after the shapes.
+    const attach = () => {
+      const last = document.querySelector('.App-toolbar [data-testid="toolbar-eraser"]')?.closest("label");
+      if (!last) return;
+      let slot = last.parentElement.querySelector(":scope > .table-tool-slot");
+      if (!slot) {
+        slot = document.createElement("span");
+        slot.className = "table-tool-slot";
+      }
+      if (last.nextSibling !== slot) last.after(slot);
+      setToolbar((cur) => (cur === slot ? cur : slot));
+    };
+    attach();
+    const obs = new MutationObserver(attach);
+    obs.observe(document.querySelector(".excalidraw") ?? document.body, { childList: true, subtree: true });
+    const offDown = api.onPointerDown((tool, pds) => {
+      if (tool.type !== "custom" || tool.customType !== "table") return;
+      setTimeout(() => {
+        api.setActiveTool({ type: "selection" });
+        insertTable(pds.origin);
+      });
+    });
+    const offChange = api.onChange((_, st) => setPlacing(st.activeTool.type === "custom" && st.activeTool.customType === "table"));
+    return () => {
+      obs.disconnect();
+      offDown();
+      offChange();
+    };
+  }, [api]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Delete on a cell (not a whole table) empties it rather than leaving a hole in the table.
+  useEffect(() => {
+    if (!api) return;
+    const onKey = (e) => {
+      if ((e.key !== "Delete" && e.key !== "Backspace") || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (api.getAppState().editingTextElement || /INPUT|TEXTAREA/.test(e.target.tagName) || e.target.isContentEditable) return;
+      const all = api.getSceneElementsIncludingDeleted();
+      const map = byId(all);
+      const ids = selectedIds();
+      const cells = ids.map((i) => cellFor(map.get(i), map));
+      if (!ids.length || cells.some((c) => !c)) return;
+      const tables = new Set(cells.map(tableOf));
+      const everyCell = tables.size === 1 && cellsOf(all, [...tables][0]).cells.every((c) => cells.some((x) => x.id === c.id));
+      if (everyCell) return; // the whole table: let Excalidraw delete it
+      e.preventDefault();
+      e.stopPropagation();
+      commit(clearCells(all, ids));
+    };
+    addEventListener("keydown", onKey, true);
+    return () => removeEventListener("keydown", onKey, true);
+  }, [api, commit]); // eslint-disable-line react-hooks/exhaustive-deps
+  // On a selected cell, or at the end of a selected table (its last cell); the table stays selected.
   const tableEdit = (fn, ...args) => {
-    const cell = selection.cell;
+    const cell = selection.cell ?? selection.table;
+    const whole = !selection.cell;
     if (!cell) return;
     const r = fn(api.getSceneElementsIncludingDeleted(), cell, ...args, themeRef.current);
     commit(r.elements ?? r);
     const live = api.getSceneElements();
     const keep = r.id ?? (live.some((e) => e.id === cell) ? cell : null);
     const el = keep && live.find((e) => e.id === keep);
-    if (el) select(keep, el.groupIds.at(-1) ?? null);
+    if (!el) return;
+    if (whole) api.updateScene({ appState: { selectedElementIds: Object.fromEntries(cellsOf(live, tableOf(el)).cells.map((c) => [c.id, true])), editingGroupId: null } });
+    else select(keep, el.groupIds[0] ?? null);
   };
 
   // A table typed into the selected note (or a new one in the middle of the screen).
   const textTable = () => {
     const all = api.getSceneElementsIncludingDeleted();
     const map = byId(all);
-    const note = selection.notes === 1 && !selection.cell ? noteFor(map.get(selection.ids[0]), map) : null;
+    const note = selection.notes === 1 && !selection.cell && !selection.table ? noteFor(map.get(selection.ids[0]), map) : null;
     const text = note && (note.type === "text" ? note : boundTextOf(note, map));
     if (!text) {
       const p = center();
@@ -1076,6 +1178,12 @@ function Canvas({ board, store, navigate, signOut }) {
             ...[...STYLES, ...prefs.styles].map((st) => cmd("Note", `Style: ${st.label}`, () => styleSelection(st), { id: `style:${st.key}`, keywords: "colour color look", search: true })),
           ]
         : []),
+      ...(selection.table
+        ? [
+            cmd("Table", "Add row", () => tableEdit(addRow, true), { keywords: "insert end" }),
+            cmd("Table", "Add column", () => tableEdit(addColumn, true), { keywords: "insert end" }),
+          ]
+        : []),
       ...(selection.cell
         ? [
             cmd("Table", "Add row below", () => tableEdit(addRow, true), { keywords: "insert" }),
@@ -1090,7 +1198,7 @@ function Canvas({ board, store, navigate, signOut }) {
       cmd("Board", "Find in notes", openNotes, { keywords: "search replace" }),
       cmd("Board", "Delete board", removeBoard, { keywords: "remove trash", search: true }),
       cmd("Insert", "Table", () => insertTable(), { keywords: "grid cells rows columns" }),
-      cmd("Insert", n === 1 && !selection.cell ? "Table in note" : "Text table", textTable, { keywords: "markdown grid rows columns textbox" }),
+      cmd("Insert", n === 1 && !selection.cell && !selection.table ? "Table in note" : "Text table", textTable, { keywords: "markdown grid rows columns textbox" }),
       cmd("Insert", "Image", () => api.setActiveTool({ type: "image" }), { shortcut: "9", keywords: "picture photo upload file" }),
       cmd("View", "Notes and styles", () => api.toggleSidebar({ name: "notes" }), { keywords: "panel sidebar list" }),
       cmd("View", "Full screen", fullScreen, { keywords: "focus zen" }),
@@ -1126,7 +1234,28 @@ function Canvas({ board, store, navigate, signOut }) {
   }[status];
 
   return (
-    <div className="editor" style={{ "--canvas-ink": theme.ink, "--canvas-line": theme.line }}>
+    <div className={"editor" + (placing ? " placing-table" : "")} style={{ "--canvas-ink": theme.ink, "--canvas-line": theme.line }}>
+      {toolbar &&
+        createPortal(
+          <label className="ToolIcon Shape ToolIcon_size_medium" title="Table: pick, then click where it goes">
+            <input
+              className="ToolIcon_type_radio ToolIcon_size_medium"
+              type="radio"
+              name="editor-current-shape"
+              aria-label="Table"
+              data-testid="toolbar-table"
+              checked={placing}
+              onChange={pickTableTool}
+            />
+            <div className="ToolIcon__icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" />
+                <path d="M3.5 9.5h17M3.5 14.5h17M9.5 4.5v15M15 4.5v15" />
+              </svg>
+            </div>
+          </label>,
+          toolbar,
+        )}
       <Excalidraw
         excalidrawAPI={setApi}
         initialData={initialData}
@@ -1306,6 +1435,12 @@ function Canvas({ board, store, navigate, signOut }) {
               <button onClick={() => tableEdit(addColumn, true)} title="Add column right">+ Column</button>
               <button onClick={() => tableEdit(removeLine, "row")} title="Delete row">− Row</button>
               <button onClick={() => tableEdit(removeLine, "col")} title="Delete column">− Column</button>
+            </>
+          ) : selection.table ? (
+            <>
+              <button onClick={() => tableEdit(addRow, true)} title="Add a row at the bottom">+ Row</button>
+              <button onClick={() => tableEdit(addColumn, true)} title="Add a column on the right">+ Column</button>
+              <button onClick={background}>Background</button>
             </>
           ) : (
             <>

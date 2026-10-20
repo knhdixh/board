@@ -113,6 +113,8 @@ const swap = (colour, theme, onBackground) => {
   return colourFor(role, theme);
 };
 
+const PAPERS = new Set(THEMES.map((t) => t.bg.toLowerCase()));
+
 /** Recolour elements that use theme colours for `theme`. Returns the same array if nothing changed. */
 export function retheme(elements, theme, touch) {
   let changed = false;
@@ -120,7 +122,9 @@ export function retheme(elements, theme, touch) {
     if (el.isDeleted) return el;
     const background = el.customData?.background;
     const strokeColor = swap(el.strokeColor, theme, background);
-    const backgroundColor = swap(el.backgroundColor, theme, background);
+    // Table cells are filled with the paper colour (so they can be clicked), and follow it.
+    const paper = el.customData?.table && PAPERS.has(el.backgroundColor?.toLowerCase());
+    const backgroundColor = paper ? theme.bg : swap(el.backgroundColor, theme, background);
     if (strokeColor === el.strokeColor && backgroundColor === el.backgroundColor) return el;
     changed = true;
     return touch(el, { strokeColor, backgroundColor });

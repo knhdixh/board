@@ -362,3 +362,8 @@ a.link { text-decoration: none; }
   .pal-foot span:first-child { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .pal-scrim, .pal { animation: none; } }
+
+/* The Table tool sits in Excalidraw's toolbar after the shapes; while it's picked, the canvas shows where it'll go. */
+.table-tool-slot { display: contents; }
+.table-tool-slot svg { width: 1em; height: 1em; }
+.editor.placing-table .excalidraw__canvas.interactive { cursor: crosshair !important; }

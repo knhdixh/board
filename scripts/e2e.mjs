@@ -125,6 +125,7 @@ try {
   await until(`[...document.querySelectorAll("button")].some(b => b.textContent === "New board")`);
   await js(`[...document.querySelectorAll("button")].find(b => b.textContent === "New board").click()`);
   check("editor opens", await until(`!!window.__board`, 15000));
+  check("new boards are cream paper", (await js(`window.__board.getAppState().viewBackgroundColor`)) === "#fffcf1");
   await sleep(1500);
 
   // Two notes by double-clicking
@@ -152,7 +153,20 @@ try {
   const toScreen = (e) => ({ x: (e.x + e.width / 2 + st.sx) * z + st.ox, y: (e.y + e.height / 2 + st.sy) * z + st.oy });
   const a = toScreen(first);
   const b = toScreen(second);
-  await drag(a.x, a.y, b.x, b.y);
+  // Hold over the target first: the dashed outline and the "connect this note…" line show.
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: a.x, y: a.y });
+  await mouse("mousePressed", a.x, a.y);
+  for (let i = 1; i <= 12; i++) {
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: a.x + ((b.x - a.x) * i) / 12, y: a.y + ((b.y - a.y) * i) / 12, button: "left", buttons: 1 });
+    await sleep(16);
+  }
+  await sleep(100);
+  check("dragging over a note outlines it", await js(`!document.querySelector(".drop-target").hidden`));
+  check("and draws a dashed line to it", await js(`document.querySelector(".drop-line").style.display === "block"`));
+  await shot("board-drop-preview.png");
+  await mouse("mouseReleased", b.x, b.y);
+  await sleep(300);
+  check("the preview goes away on drop", await js(`document.querySelector(".drop-target").hidden && document.querySelector(".drop-line").style.display === "none"`));
   await sleep(400);
   let ar = await arrows();
   check("drop onto a note connects them", ar.length === 1, `${ar.length} arrows`);
@@ -197,7 +211,7 @@ try {
   await sleep(400);
   const all = await scene();
   const rects = all.filter((e) => e.type === "rectangle");
-  check("yellow style wraps notes in filled bubbles", rects.length === 2 && rects.every((r) => r.backgroundColor === "#fff3bf"));
+  check("yellow style wraps notes in filled bubbles", rects.length === 2 && rects.every((r) => r.backgroundColor === "#fdf0b4"));
   const arr = all.find((e) => e.type === "arrow");
   check("connection moved onto the bubbles", rects.some((r) => r.id === arr?.startBinding?.elementId) && rects.some((r) => r.id === arr?.endBinding?.elementId));
   await click(600, 700);
@@ -242,6 +256,147 @@ try {
   const copied = await until(`navigator.clipboard.readText().then(t => t.includes("First idea") && t.includes("Second idea"))`, 3000);
   check("⌘⇧C copies the board as text", copied);
 
+  // ---------- Scapple flow ----------
+  const view = async () => {
+    const v = await js(`(() => { const s = window.__board.getAppState(); return { z: s.zoom.value, sx: s.scrollX, sy: s.scrollY, ox: s.offsetLeft, oy: s.offsetTop }; })()`);
+    return { center: (e) => ({ x: (e.x + e.width / 2 + v.sx) * v.z + v.ox, y: (e.y + e.height / 2 + v.sy) * v.z + v.oy }), point: (x, y) => ({ x: (x + v.sx) * v.z + v.ox, y: (y + v.sy) * v.z + v.oy }), z: v.z };
+  };
+  // New, empty area for these checks: scroll the board well away from the earlier notes.
+  await js(`window.__board.updateScene({ appState: { scrollX: -3000, scrollY: -3000 } })`);
+  await sleep(300);
+  let v = await view();
+
+  // ⌘-double-click writes a note that's already connected to the selected one
+  await dblclick(300, 200);
+  await sleep(300);
+  await type("Parent");
+  await key("Escape");
+  await sleep(400);
+  const parent = (await texts()).find((x) => x.text === "Parent");
+  const pc = (await view()).center(parent);
+  await click(pc.x, pc.y);
+  await sleep(200);
+  await click(700, 200, { modifiers: 4 });
+  await mouse("mousePressed", 700, 200, { clickCount: 2, modifiers: 4 });
+  await mouse("mouseReleased", 700, 200, { clickCount: 2, modifiers: 4 });
+  await sleep(400);
+  await type("Child");
+  await key("Escape");
+  await sleep(700);
+  const child = (await texts()).find((x) => x.text === "Child");
+  const link = (await arrows()).find((x) => [x.startBinding?.elementId, x.endBinding?.elementId].includes(child?.id));
+  check("⌘-double-click makes a connected note", !!child && !!link, child ? "" : "no child note");
+
+  // Magnetic stack: notes written under one another move when one grows
+  await click(600, 760);
+  await dblclick(300, 400);
+  await sleep(300);
+  await type("Top");
+  await key("Escape");
+  await sleep(300);
+  await dblclick(300, 470);
+  await sleep(300);
+  await type("Under");
+  await key("Escape");
+  await sleep(300);
+  let top = (await texts()).find((x) => x.text === "Top");
+  let under = (await texts()).find((x) => x.text === "Under");
+  v = await view();
+  let tc = v.center(top);
+  let uc = v.center(under);
+  await drag(tc.x - 30, tc.y - 30, uc.x + 60, uc.y + 30); // box-select both
+  await js(`[...document.querySelectorAll(".notebar button")].find(b => b.textContent === "Stack").click()`);
+  await sleep(300);
+  await click(600, 760);
+  top = (await texts()).find((x) => x.text === "Top");
+  under = (await texts()).find((x) => x.text === "Under");
+  const gapBefore = under.y - (top.y + top.height);
+  tc = (await view()).center(top);
+  await dblclick(tc.x, tc.y); // edit the top note
+  await sleep(300);
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "End", code: "End", windowsVirtualKeyCode: 35 });
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+  await type("second line");
+  await key("Escape");
+  await sleep(600);
+  const top2 = (await texts()).find((x) => x.id === top.id);
+  const under2 = (await texts()).find((x) => x.id === under.id);
+  check("a growing note pushes its stack down", top2.height > top.height && Math.abs(under2.y - (top2.y + top2.height) - gapBefore) < 2, `gap ${gapBefore} → ${under2.y - (top2.y + top2.height)}`);
+
+  // Dragging a connecting line moves both notes
+  const pNow = (await texts()).find((x) => x.id === parent.id);
+  const cNow = (await texts()).find((x) => x.id === child.id);
+  const lineNow = (await arrows()).find((x) => x.id === link.id);
+  v = await view();
+  const mid = v.point(lineNow.x + lineNow.points[1][0] / 2, lineNow.y + lineNow.points[1][1] / 2);
+  await click(600, 760);
+  await drag(mid.x, mid.y, mid.x, mid.y + 120);
+  await sleep(400);
+  const pAfter = (await texts()).find((x) => x.id === parent.id);
+  const cAfter = (await texts()).find((x) => x.id === child.id);
+  const lineAfter = (await arrows()).find((x) => x.id === link.id);
+  check(
+    "dragging a connection moves both notes",
+    pAfter.y - pNow.y > 60 && cAfter.y - cNow.y > 60 && lineAfter?.startBinding && lineAfter?.endBinding,
+    `${Math.round(pAfter.y - pNow.y)} / ${Math.round(cAfter.y - cNow.y)}`,
+  );
+  await click(600, 760);
+
+  // Notes panel: count in the footer opens a list you can search and jump from
+  const countText = await js(`document.querySelector(".note-count")?.textContent`);
+  check("footer counts the notes", /^\d+ notes$/.test(countText ?? ""), countText);
+  check("note count is on screen", await js(`(() => { const r = document.querySelector(".note-count").getBoundingClientRect(); const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return r.width > 0 && r.bottom <= innerHeight && top?.classList.contains("note-count"); })()`));
+  await js(`document.querySelector(".note-count").click()`);
+  check("notes panel opens", await until(`document.querySelectorAll(".notes-panel .panel-list li .panel-row").length > 5`, 3000));
+  await js(`(() => { const i = document.querySelector('.notes-panel input[type=search]'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; set.call(i, "Child"); i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  await sleep(200);
+  check("find narrows the list", (await js(`document.querySelectorAll(".notes-panel .panel-list:not(.styles) .panel-row").length`)) === 1);
+  await js(`(() => { const i = [...document.querySelectorAll('.notes-panel .replace input')][0]; const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; set.call(i, "Kid"); i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  await js(`document.querySelector(".notes-panel .replace .link").click()`);
+  await sleep(500);
+  check("replace changes the note", (await texts()).some((x) => x.text === "Kid"));
+  await js(`(() => { const i = document.querySelector('.notes-panel input[type=search]'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; set.call(i, "Kid"); i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  await sleep(200);
+  await js(`document.querySelector(".notes-panel .panel-list:not(.styles) .panel-row").click()`);
+  await sleep(500);
+  check("clicking a note selects it", await js(`Object.keys(window.__board.getAppState().selectedElementIds).length === 1`));
+  await shot("board-notes-panel.png");
+  await js(`window.__board.toggleSidebar({ name: "notes", force: false })`);
+  await click(600, 760);
+
+  // QuickZoom: hold Z to see everything, let go to zoom back
+  const z0 = (await view()).z;
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "z", code: "KeyZ", windowsVirtualKeyCode: 90 });
+  await sleep(500);
+  const zOut = (await view()).z;
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "z", code: "KeyZ", windowsVirtualKeyCode: 90 });
+  await sleep(300);
+  check("hold Z zooms out to the whole board", zOut < z0, `${z0} → ${zOut}`);
+  check("letting go zooms back in", Math.abs((await view()).z - z0) < 0.01);
+
+  // Themes: Night paper recolours the board's text and lines
+  await js(`document.querySelector(".main-menu-trigger").click()`);
+  await until(`!!document.querySelector(".theme-swatch")`, 2000);
+  await shot("board-menu.png");
+  await js(`document.querySelector('.theme-swatch[aria-label="Night theme"]').click()`);
+  await sleep(500);
+  const night = await scene();
+  check("night paper changes the canvas", (await js(`window.__board.getAppState().viewBackgroundColor`)) === "#1b1b1d");
+  check("text turns light", night.filter((e) => e.type === "text" && !e.containerId).every((e) => e.strokeColor === "#ececec"));
+  check("lines follow", night.filter((e) => e.type === "arrow" && e.strokeStyle === "dotted").every((e) => e.strokeColor === "#8d8d92"));
+  await key("Escape");
+  await js(`window.__board.scrollToContent(undefined, { fitToContent: true })`);
+  await sleep(400);
+  await shot("board-night.png");
+  // The menu stays open while you try themes.
+  if (!(await js(`!!document.querySelector(".theme-swatch")`))) await js(`document.querySelector(".main-menu-trigger").click()`);
+  await until(`!!document.querySelector(".theme-swatch")`, 2000);
+  await js(`document.querySelector('.theme-swatch[aria-label="Paper theme"]').click()`);
+  await sleep(500);
+  check("back to paper", (await scene()).filter((e) => e.type === "text" && !e.containerId).every((e) => e.strokeColor === "#262420"));
+  await shot("board-paper.png");
+  await js(`window.__board.updateScene({ appState: { scrollX: 0, scrollY: 0 } })`);
+
   // Long text wraps at note width
   await dblclick(300, 600);
   await sleep(300);
@@ -254,12 +409,14 @@ try {
   // Saved: wait for the status and reload
   await sleep(1500);
   check("saves", await until(`document.querySelector(".topbar .status")?.textContent === "Saved"`, 5000));
+  const savedScene = await scene();
   await send("Page.reload");
   await until(`!!window.__board`, 15000);
   await sleep(1500);
   const after = await scene();
   check("no unsaved-changes prompt after saving", dialogs.length === 0, dialogs.join(","));
-  check("board survives a reload", after.filter((e) => e.type === "text").length === 3 && after.filter((e) => e.type === "arrow").length === 1);
+  const sig = (els) => els.filter((e) => e.type === "text").map((e) => e.text).sort().join("|") + "#" + els.filter((e) => e.type === "arrow").length;
+  check("board survives a reload", sig(after) === sig(savedScene), `${sig(after).length} vs ${sig(savedScene).length}`);
 
   // Import a Scapple file from the home page
   await send("Page.navigate", { url: BASE + "/" });
@@ -273,7 +430,7 @@ try {
   check("imports a .scap file", impTexts.length === 3 && imp.filter((e) => e.type === "arrow").length === 2);
   const bubbled = impTexts.find((e) => e.text.includes("Main"));
   const box = imp.find((e) => e.id === bubbled?.containerId);
-  check("imported bubble fits its text", box && box.height >= bubbled.height + 20 && bubbled.y > box.y && bubbled.y + bubbled.height < box.y + box.height);
+  check("imported bubble fits its text", box && box.height >= bubbled.height + 16 && bubbled.y > box.y && bubbled.y + bubbled.height < box.y + box.height);
   check("imported board is named after the file", (await js(`document.querySelector(".topbar .title").value`)) === "ideas");
   await shot("board-imported.png");
 

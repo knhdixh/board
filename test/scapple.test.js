@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 import { byId, newRect, newText } from "../src/scapple/elements.js";
 import { exitPoint, findConnector, noteAt, rerouteBound, toggleConnection } from "../src/scapple/connect.js";
 import { row, separate, stack, units } from "../src/scapple/layout.js";
-import { applyStyle, fitContainers } from "../src/scapple/styles.js";
+import { STYLES, applyStyle, fitContainers, styleFromNote } from "../src/scapple/styles.js";
+import { DEFAULT_THEME, THEMES, retheme, themeFor } from "../src/scapple/themes.js";
+import { PAD, touch } from "../src/scapple/elements.js";
+const style = (k) => STYLES.find((s) => s.key === k);
+const paint = (els, ids, k, theme = DEFAULT_THEME) => applyStyle(els, ids, style(k), theme).elements;
 import { color, importScapple, parseIds } from "../src/scapple/scap.js";
 import { outline } from "../src/scapple/outline.js";
 
@@ -30,6 +34,7 @@ describe("connections", () => {
     expect(first.action).toBe("connected");
     const arrow = first.elements.find((e) => e.type === "arrow");
     expect(arrow.strokeStyle).toBe("dotted");
+    expect(arrow.strokeColor).toBe(DEFAULT_THEME.line);
     expect(arrow.endArrowhead).toBeNull();
     expect(arrow.startBinding.elementId).toBe(a.id);
     expect(arrow.endBinding.elementId).toBe(b.id);
@@ -117,29 +122,29 @@ describe("styles", () => {
     const a = note("a", 0, 0);
     const b = note("b", 300, 0);
     let els = toggleConnection([a, b], a.id, b.id).elements;
-    els = applyStyle(els, [a.id], "yellow");
+    els = paint(els, [a.id], "yellow");
     const map = byId(els);
     const text = map.get(a.id);
     const rect = map.get(text.containerId);
     expect(rect.type).toBe("rectangle");
-    expect(rect.backgroundColor).toBe("#fff3bf");
+    expect(rect.backgroundColor).toBe(DEFAULT_THEME.fills.yellow);
     const arrow = els.find((e) => e.type === "arrow");
     expect(arrow.startBinding.elementId).toBe(rect.id);
     expect(rect.boundElements.map((x) => x.id)).toContain(arrow.id);
     // Applying again restyles the same bubble rather than nesting another one.
-    const again = applyStyle(els, [a.id], "bubble");
+    const again = paint(els, [a.id], "bubble");
     expect(live(again).filter((e) => e.type === "rectangle")).toHaveLength(1);
-    expect(byId(again).get(rect.id).strokeColor).toBe("#1e1e1e");
+    expect(byId(again).get(rect.id).strokeColor).toBe(DEFAULT_THEME.ink);
   });
 
   it("keeps bubbles of stacked notes from overlapping", () => {
     const a = note("a", 0, 0);
     const b = note("b", 0, 28);
-    const els = applyStyle([a, b], [a.id, b.id], "bubble");
+    const els = paint([a, b], [a.id, b.id], "bubble");
     const [r1, r2] = live(els).filter((e) => e.type === "rectangle").sort((p, q) => p.y - q.y);
     expect(r2.y).toBeGreaterThanOrEqual(r1.y + r1.height);
     const t2 = byId(els).get(r2.boundElements.find((x) => x.type === "text").id);
-    expect(t2.y - r2.y).toBe(12); // text moved with its bubble
+    expect(t2.y - r2.y).toBe(PAD); // text moved with its bubble
   });
 
   it("grows a shape to fit re-measured text and centres it", () => {
@@ -147,8 +152,8 @@ describe("styles", () => {
     const t = newText({ text: "long", x: 0, y: 0, width: 100, height: 40, containerId: box.id, textAlign: "center" });
     box.boundElements = [{ id: t.id, type: "text" }];
     const out = byId(fitContainers([box, t]));
-    expect(out.get(box.id)).toMatchObject({ width: 124, height: 64 });
-    expect(out.get(t.id)).toMatchObject({ x: 12, y: 12 });
+    expect(out.get(box.id)).toMatchObject({ width: 100 + PAD * 2, height: 40 + PAD * 2 });
+    expect(out.get(t.id)).toMatchObject({ x: PAD, y: PAD });
   });
 });
 
@@ -311,5 +316,112 @@ describe("usage dashboard", () => {
     const { rows } = await import("../src/usageRows.js");
     const r = rows({ db_bytes: 0, active_users_30d: 0, storage_bytes: 0, month: { supabase_bytes: 0, vercel_bytes: 0, visits: 0 }, heartbeats: {} });
     expect(r.supabase.find((x) => x.label === "Idle time").p).toBe(100);
+  });
+});
+
+describe("themes", () => {
+  it("defaults to cream paper and finds presets by colour", () => {
+    expect(DEFAULT_THEME.bg).toBe("#fffcf1");
+    expect(themeFor("#1D3557").key).toBe("blueprint");
+  });
+
+  it("gives any custom colour readable text", () => {
+    expect(themeFor("#101418").ink).toBe(THEMES.find((t) => t.key === "night").ink);
+    expect(themeFor("#ffe8f0").ink).toBe(DEFAULT_THEME.ink);
+  });
+
+  it("recolours theme colours and keeps colours you chose", () => {
+    const a = note("a", 0, 0);
+    a.strokeColor = "#1e1e1e"; // Excalidraw's default ink = the white theme's
+    const b = note("b", 300, 0);
+    b.strokeColor = "#e8590c"; // picked by hand
+    let els = toggleConnection([a, b], a.id, b.id, { theme: THEMES[1] }).elements;
+    els = paint(els, [a.id], "yellow", THEMES[1]);
+    const night = THEMES.find((t) => t.key === "night");
+    const out = retheme(els, night, touch);
+    const map = byId(out);
+    expect(map.get(a.id).strokeColor).toBe(night.ink);
+    expect(map.get(b.id).strokeColor).toBe("#e8590c");
+    expect(out.find((e) => e.type === "arrow").strokeColor).toBe(night.line);
+    expect(map.get(map.get(a.id).containerId).backgroundColor).toBe(night.fills.yellow);
+    expect(retheme(out, night, touch)).toBe(out); // nothing left to change
+  });
+
+  it("tells a background shape's fill from a grey note with the same colour", async () => {
+    const { addBackground } = await import("../src/scapple/background.js");
+    const white = THEMES[1];
+    const a = note("a", 0, 0);
+    let els = paint([a], [a.id], "grey", white);
+    els = addBackground(els, [a.id], white).elements;
+    const sage = THEMES.find((t) => t.key === "sage");
+    const out = retheme(els, sage, touch);
+    expect(out[0].backgroundColor).toBe(sage.shape);
+    expect(out.find((e) => e.type === "rectangle" && !e.customData).backgroundColor).toBe(sage.fills.grey);
+  });
+});
+
+describe("styles", () => {
+  it("title and faded change the text but keep the shape", () => {
+    const a = note("a", 0, 0);
+    const r = applyStyle([a], [a.id], style("title"), DEFAULT_THEME);
+    expect(r.measure).toBe(true);
+    expect(r.elements).toHaveLength(1);
+    expect(r.elements[0].fontSize).toBe(28);
+    const f = paint([a], [a.id], "faded");
+    expect(f[0].strokeColor).toBe(DEFAULT_THEME.line);
+  });
+
+  it("saves a note's look as a style and applies it elsewhere", () => {
+    const a = note("a", 0, 0);
+    let els = paint([a], [a.id], "dashed");
+    const saved = styleFromNote(els, a.id, "My dashed");
+    expect(saved.resolved.shape.strokeStyle).toBe("dashed");
+    const b = note("b", 0, 200);
+    const out = applyStyle([...els, b], [b.id], saved, THEMES[4]).elements;
+    const bt = byId(out).get(b.id);
+    expect(byId(out).get(bt.containerId).strokeStyle).toBe("dashed");
+  });
+});
+
+describe("magnetic stacks", () => {
+  it("pushes the notes below down when a note grows, and pulls them up when one is deleted", async () => {
+    const { boxesOf, restack } = await import("../src/scapple/stacks.js");
+    const a = note("a", 0, 0, 80, 20);
+    const b = note("b", 0, 28, 80, 20);
+    const c = note("c", 0, 56, 80, 20);
+    const side = note("side", 300, 30, 80, 20);
+    const before = boxesOf([a, b, c, side]);
+    const grown = restack(before, [{ ...a, height: 60 }, b, c, side]);
+    const g = byId(grown);
+    expect(g.get(b.id).y).toBe(68);
+    expect(g.get(c.id).y).toBe(96);
+    expect(g.get(side.id).y).toBe(30);
+
+    const gone = byId(restack(before, [a, { ...b, isDeleted: true }, c, side]));
+    expect(gone.get(c.id).y).toBe(28);
+  });
+
+  it("leaves notes alone when one is just dragged", async () => {
+    const { boxesOf, restack } = await import("../src/scapple/stacks.js");
+    const a = note("a", 0, 0, 80, 20);
+    const b = note("b", 0, 28, 80, 20);
+    const els = [{ ...a, x: 400, height: 60 }, b];
+    expect(restack(boxesOf([a, b]), els)).toBe(els);
+  });
+});
+
+describe("notes list", () => {
+  it("lists notes in reading order and replaces text", async () => {
+    const { listNotes, findNotes, replaceInNotes } = await import("../src/scapple/notes.js");
+    const a = note("Second Coffee", 0, 100);
+    const b = note("first coffee", 0, 0);
+    const els = toggleConnection([a, b], a.id, b.id).elements;
+    const list = listNotes(els);
+    expect(list.map((n) => n.text)).toEqual(["first coffee", "Second Coffee"]);
+    expect(list[0].links).toBe(1);
+    expect(findNotes(list, "SECOND")).toHaveLength(1);
+    const r = replaceInNotes(els, "coffee", "tea");
+    expect(r.count).toBe(2);
+    expect(listNotes(r.elements).map((n) => n.text)).toEqual(["first tea", "Second tea"]);
   });
 });

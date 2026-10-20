@@ -36,3 +36,14 @@ export const cloud = {
 export const isAllowed = async () => must(await supabase.rpc("is_allowed"));
 export const usageStats = async () => must(await supabase.rpc("usage_stats"));
 export const recordUsage = async (u) => must(await supabase.rpc("record_usage", { visits: u.visits, vercel_bytes: u.vercel_bytes, supabase_bytes: u.supabase_bytes }));
+
+export const settings = {
+  async get() {
+    const row = must(await supabase.from("settings").select("data").maybeSingle());
+    return row?.data ?? {};
+  },
+  async save(data) {
+    const { data: s } = await supabase.auth.getSession();
+    must(await supabase.from("settings").upsert({ user_id: s.session.user.id, data, updated_at: new Date().toISOString() }));
+  },
+};

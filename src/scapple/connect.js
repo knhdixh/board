@@ -1,5 +1,6 @@
 // Scapple-style connections: drop one note onto another to connect them, drop it again to disconnect.
 import { bbox, byId, contains, isNote, newArrow, noteFor, touch } from "./elements.js";
+import { DEFAULT_THEME } from "./themes.js";
 
 const GAP = 6;
 
@@ -83,7 +84,7 @@ const dropBound = (el, id) =>
  * Connect `fromId` to `toId`, or remove the connection if there already is one.
  * Lines are dotted with no arrowheads (like Scapple); `arrow: true` draws a solid arrow from → to.
  */
-export function toggleConnection(elements, fromId, toId, { arrow = false } = {}) {
+export function toggleConnection(elements, fromId, toId, { arrow = false, theme = DEFAULT_THEME } = {}) {
   const existing = findConnector(elements, fromId, toId);
   if (existing) {
     const out = elements.map((el) => {
@@ -97,7 +98,7 @@ export function toggleConnection(elements, fromId, toId, { arrow = false } = {})
   const from = map.get(fromId);
   const to = map.get(toId);
   let connector = newArrow({
-    strokeColor: arrow ? "#1e1e1e" : "#868e96",
+    strokeColor: arrow ? theme.ink : theme.line,
     strokeStyle: arrow ? "solid" : "dotted",
     endArrowhead: arrow ? "arrow" : null,
     startBinding: { elementId: fromId, focus: 0, gap: GAP },

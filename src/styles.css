@@ -172,7 +172,10 @@ footer { display: flex; justify-content: space-between; margin-top: 72px; color:
 }
 .editor .excalidraw .welcome-screen-decor { font-family: var(--font); }
 
-.topbar { display: flex; align-items: center; gap: 12px; font-size: 13px; height: 100%; }
+.topbar {
+  display: flex; align-items: center; gap: 12px; font-size: 13px; height: 100%;
+  background: var(--bg); box-shadow: 0 0 0 1px var(--line); padding: 0 12px; min-height: 36px;
+}
 .topbar .back { color: var(--fg); text-decoration: none; white-space: nowrap; }
 .topbar .back:hover { opacity: .6; }
 .topbar .title {
@@ -186,15 +189,18 @@ footer { display: flex; justify-content: space-between; margin-top: 72px; color:
 .topbar .status { color: var(--muted); white-space: nowrap; min-width: 3.5em; }
 .topbar .status.conflict, .topbar .status.offline { color: var(--danger); }
 
-.welcome { text-align: center; font-family: var(--font); font-size: 15px; color: var(--fg); line-height: 1.6; }
+.welcome { text-align: center; font-family: var(--font); font-size: 15px; color: var(--canvas-ink, var(--fg)); line-height: 1.6; }
+.welcome .muted { color: var(--canvas-line, var(--muted)); }
 .welcome p { margin: 0; }
 .welcome .muted { font-size: 13px; margin-top: 8px; }
 
+/* "…to this one": a dashed rounded outline round the target, and a dashed line from the note you're dragging. */
 .drop-target {
   position: fixed; z-index: 5; pointer-events: none;
-  outline: 1px dashed var(--fg); outline-offset: 0;
-  background: rgba(0, 0, 0, .03);
+  border: 2px dashed var(--canvas-ink, var(--fg)); border-radius: 10px;
 }
+.drop-line { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; display: none; overflow: visible; }
+.drop-line line { stroke: var(--canvas-ink, var(--fg)); stroke-width: 2; stroke-dasharray: 6 5; }
 
 .notebar {
   position: fixed; z-index: 5; left: 50%; bottom: 20px; transform: translateX(-50%);
@@ -218,9 +224,12 @@ footer { display: flex; justify-content: space-between; margin-top: 72px; color:
 .swatch:hover { border-color: var(--fg); }
 .swatch.bubble { border-color: var(--fg); border-radius: 8px; }
 .swatch.plain { border-color: var(--line); }
+.swatch.dashed { border: 1px dashed var(--fg); border-radius: 8px; }
+.swatch.more { border-color: transparent; letter-spacing: .05em; }
 @media (max-width: 730px) {
   /* Excalidraw's phone toolbar sits at the bottom; keep the note bar above it. */
   .notebar { bottom: 76px; }
+  .note-count { display: none; }
   .topbar .title { width: 11ch; }
 }
 @media (prefers-reduced-motion: reduce) { .notebar { animation: none; } }
@@ -256,3 +265,53 @@ a.link { text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   .usage-rows li .fill { transform: scaleX(var(--p)) !important; transition: none !important; }
 }
+
+/* ---------- themes ---------- */
+.theme-picker { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: default; }
+.theme-label { font-size: 13px; }
+.theme-swatches { display: flex; gap: 4px; }
+.theme-swatch {
+  width: 22px; height: 22px; padding: 0; cursor: pointer;
+  border: 1px solid; font: 500 11px/1 var(--font); display: grid; place-items: center;
+}
+.theme-swatch.on { outline: 1px solid var(--fg); outline-offset: 2px; }
+
+/* ---------- notes panel ---------- */
+.note-count {
+  position: fixed; z-index: 4; right: 68px; bottom: 16px;
+  background: var(--bg); border: 0; box-shadow: 0 0 0 1px var(--line);
+  font: 400 13px var(--font); padding: 6px 12px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.note-count:hover { background: #f2f2f2; }
+.notes-panel { font-family: var(--font); }
+.panel-title { font-size: 15px; font-weight: 500; }
+.panel-title .muted { font-weight: 400; margin-left: 6px; }
+.panel-body { padding: 0 16px 24px; overflow-y: auto; font-size: 13px; }
+.panel-body .field input { font-size: 14px; }
+.replace { display: flex; align-items: flex-end; gap: 12px; margin-top: 12px; }
+.replace .field { flex: 1; }
+.replace .link { white-space: nowrap; padding-bottom: 8px; }
+.panel-list { list-style: none; margin: 16px 0 0; padding: 0; }
+.panel-list li { border-top: 1px solid var(--line); }
+.panel-list li:last-child { border-bottom: 1px solid var(--line); }
+.panel-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: none; border: 0; padding: 9px 0; text-align: left; cursor: pointer; color: var(--fg);
+}
+.panel-row:hover .panel-text { text-decoration: underline; text-underline-offset: 3px; }
+.panel-row:disabled { cursor: default; opacity: .55; }
+.panel-row:disabled:hover .panel-text { text-decoration: none; }
+.panel-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.panel-empty { padding: 9px 0; }
+.panel-meta { margin-top: 32px; }
+.style-row { display: flex; align-items: center; gap: 8px; }
+.style-row .panel-row { flex: 1; }
+.style-chip {
+  width: 34px; height: 22px; flex: none; display: grid; place-items: center;
+  border: 1px solid transparent; font-family: Arial, Helvetica, sans-serif;
+}
+.default-toggle { display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; }
+.default-toggle input { accent-color: var(--fg); margin: 0; }
+.remove { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0 2px; }
+.remove:hover { color: var(--fg); }
+.save-style { margin-top: 16px; }

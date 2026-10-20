@@ -2,8 +2,7 @@
 import { bbox, byId, isNote, newRect, touch } from "./elements.js";
 import { rerouteBound, routeArrow } from "./connect.js";
 import { units } from "./layout.js";
-
-export const BACKGROUND_FILL = "#f1f3f5";
+import { DEFAULT_THEME } from "./themes.js";
 const PAD = 24;
 
 export const isBackground = (el) => !!el && !el.isDeleted && el.customData?.background === true;
@@ -12,7 +11,7 @@ const inside = (inner, outer) =>
   inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h;
 
 /** A background shape around the selected notes, placed behind everything. */
-export function addBackground(elements, selectedIds) {
+export function addBackground(elements, selectedIds, theme = DEFAULT_THEME) {
   const us = units(elements, selectedIds);
   if (!us.length) return { elements, id: null };
   const x = Math.min(...us.map((u) => u.box.x)) - PAD;
@@ -24,8 +23,8 @@ export function addBackground(elements, selectedIds) {
     y,
     width: w,
     height: h,
-    backgroundColor: BACKGROUND_FILL,
-    strokeColor: "transparent",
+    backgroundColor: theme.shape,
+    strokeColor: theme.shapeStroke,
     customData: { background: true },
   });
   return { elements: [shape, ...elements], id: shape.id };

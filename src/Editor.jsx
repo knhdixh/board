@@ -11,7 +11,8 @@ import {
   viewportCoordsToSceneCoords,
 } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
-import { Conflict } from "./store.js";
+import { Conflict, settings } from "./store.js";
+import NotesPanel from "./NotesPanel.jsx";
 import { toast } from "./toast.jsx";
 import {
   FONT,
@@ -21,9 +22,12 @@ import {
   noteFor,
   touch,
 } from "./scapple/elements.js";
-import { noteAt, rerouteBound, toggleConnection } from "./scapple/connect.js";
+import { exitPoint, noteAt, rerouteBound, routeArrow, toggleConnection } from "./scapple/connect.js";
 import { row, sameWidth, stack, units } from "./scapple/layout.js";
-import { STYLES, applyStyle, fitContainers } from "./scapple/styles.js";
+import { STYLES, applyStyle, fitContainers, styleFromNote } from "./scapple/styles.js";
+import { DEFAULT_THEME, THEMES, retheme, themeAppState, themeFor } from "./scapple/themes.js";
+import { boxesOf, restack } from "./scapple/stacks.js";
+import { replaceInNotes } from "./scapple/notes.js";
 import { outline, selectionOutline } from "./scapple/outline.js";
 import { addBackground, carry, contentsOf, isBackground } from "./scapple/background.js";
 import { exportScapple } from "./scapple/scap.js";
@@ -36,8 +40,9 @@ const DEFAULTS = {
   currentItemStrokeWidth: 1,
   currentItemArrowType: "sharp",
   currentItemRoundness: "round",
-  viewBackgroundColor: "#ffffff",
+  ...themeAppState(DEFAULT_THEME),
 };
+const QUICK = new Set(["plain", "bubble", "dashed", "yellow", "blue", "green", "red"]); // in the note bar
 const WRAP = 320; // free text wraps at this width once you stop typing, like a Scapple note
 const UI = {
   canvasActions: {
@@ -105,12 +110,19 @@ function Canvas({ board, store, navigate, signOut }) {
   const [status, setStatus] = useState("saved"); // saved | saving | offline | conflict
   const [selection, setSelection] = useState({ notes: 0, ids: [] });
   const dropBox = useRef(null); // outline around the note you'd connect to
+  const preview = useRef(null); // dashed line from the dragged note to that note
+  const [theme, setTheme] = useState(() => themeFor(board.scene?.appState?.viewBackgroundColor ?? DEFAULT_THEME.bg));
+  const themeRef = useRef(theme);
+  const bgRef = useRef(theme.bg);
+  const [noteCount, setNoteCount] = useState(0);
+  const [prefs, setPrefs] = useState({ styles: [], defaultStyle: "plain" });
+  const prefsRef = useRef(prefs);
 
   const initialData = useMemo(() => {
     const scene = board.scene ?? {};
     return {
       elements: scene.elements ?? [],
-      appState: { ...DEFAULTS, ...(scene.appState ?? {}) },
+      appState: { ...DEFAULTS, ...(scene.appState ?? {}), ...themeAppState(themeFor(scene.appState?.viewBackgroundColor ?? DEFAULT_THEME.bg)) },
       files: scene.files ?? {},
       scrollToContent: !scene.appState?.scrollX,
     };
@@ -249,6 +261,60 @@ function Canvas({ board, store, navigate, signOut }) {
   /* ---------- change tracking ---------- */
   const editing = useRef(null);
   const selKey = useRef("");
+  const boxes = useRef(null);
+  const known = useRef(new Set());
+  const isNew = useRef(false);
+  const connectFrom = useRef(null); // notes a ⌘-double-clicked note should connect to
+  const lastNotes = useRef(null); // the last selected notes, and when they were deselected
+
+  const finishNote = (id, fresh, from) => {
+    let all = api.getSceneElementsIncludingDeleted();
+    const el = all.find((e) => e.id === id);
+    if (!el || el.isDeleted || el.type !== "text") return;
+    let measure = false;
+    let changed = false;
+    if (!el.containerId && el.autoResize !== false && el.width > WRAP) {
+      all = all.map((e) => (e.id === id ? touch(e, { autoResize: false, width: WRAP }) : e));
+      measure = changed = true;
+    }
+    if (fresh && !el.containerId) {
+      const style = [...STYLES, ...prefsRef.current.styles].find((s) => s.key === prefsRef.current.defaultStyle);
+      if (style && style.key !== "plain") {
+        const r = applyStyle(all, [id], style, themeRef.current);
+        all = r.elements;
+        measure = true;
+        changed = true;
+      }
+    }
+    if (fresh && from?.length) {
+      const map = byId(all);
+      const target = noteFor(map.get(id), map).id;
+      for (const f of from) if (map.get(f) && !map.get(f).isDeleted) all = toggleConnection(all, f, target, { theme: themeRef.current }).elements;
+      changed = true;
+      toast("Connected");
+    }
+    if (changed) commit(all, { measure });
+  };
+
+  // ⌘-double-click: the new note gets connected to the note(s) you had selected.
+  useEffect(() => {
+    if (!api) return;
+    const onDbl = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.target.tagName !== "CANVAS") return;
+      const ln = lastNotes.current;
+      if (!ln || (ln.at && Date.now() - ln.at > 2000)) return;
+      const map = byId(api.getSceneElements());
+      connectFrom.current = [...new Set(ln.ids.map((i) => noteFor(map.get(i), map)?.id).filter(Boolean))];
+      // Excalidraw ignores ⌘-double-click, so replay it as a plain one: that starts a new note here.
+      e.stopPropagation();
+      e.preventDefault();
+      const { clientX, clientY } = e;
+      e.target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX, clientY, view: window }));
+    };
+    const root = document.querySelector(".editor");
+    root?.addEventListener("dblclick", onDbl, true);
+    return () => root?.removeEventListener("dblclick", onDbl, true);
+  }, [api]);
   const onChange = useCallback(
     (elements, appState, files) => {
       const key = `${getSceneVersion(elements)}:${appState.viewBackgroundColor}:${Object.keys(files).length}:${appState.gridModeEnabled}`;
@@ -259,33 +325,54 @@ function Canvas({ board, store, navigate, signOut }) {
         if (!blocked.current) schedule();
       }
 
-      // When you finish typing a long free-text note, wrap it to a note's width.
-      const editingId = appState.editingTextElement?.id ?? null;
-      if (editing.current && !editingId) {
-        const done = editing.current;
+      // Canvas colour changed in Excalidraw's own picker: bring text, lines and fills along.
+      if (appState.viewBackgroundColor !== bgRef.current) {
+        bgRef.current = appState.viewBackgroundColor;
+        const t = themeFor(appState.viewBackgroundColor);
+        themeRef.current = t;
+        setTheme(t);
         setTimeout(() => {
           const all = api.getSceneElementsIncludingDeleted();
-          const el = all.find((e) => e.id === done);
-          if (
-            el &&
-            el.type === "text" &&
-            !el.isDeleted &&
-            !el.containerId &&
-            el.autoResize !== false &&
-            el.width > WRAP
-          ) {
-            commit(
-              all.map((e) =>
-                e.id === done
-                  ? touch(e, { autoResize: false, width: WRAP })
-                  : e,
-              ),
-              { measure: true },
-            );
-          }
+          const next = retheme(all, t, touch);
+          api.updateScene({
+            ...(next !== all ? { elements: next } : {}),
+            appState: { currentItemStrokeColor: t.ink },
+            captureUpdate: CaptureUpdateAction.EVENTUALLY,
+          });
         });
       }
+
+      // Magnetic stacks: a note in a column grew, shrank or went away, so the notes under it follow.
+      if (boxes.current && !appState.selectedElementsAreBeingDragged) {
+        const before = boxes.current;
+        if (restack(before, elements) !== elements)
+          setTimeout(() => {
+            const all = api.getSceneElementsIncludingDeleted();
+            const next = restack(before, all);
+            if (next !== all) api.updateScene({ elements: next, captureUpdate: CaptureUpdateAction.EVENTUALLY });
+          });
+      }
+      boxes.current = boxesOf(elements);
+
+      let count = 0;
+      for (const el of elements) if (isNote(el) && !el.customData?.background) count++;
+      setNoteCount(count);
+
+      // A note just finished editing: wrap long text, connect it if it was ⌘-double-clicked,
+      // and give brand-new notes your default style.
+      const editingId = appState.editingTextElement?.id ?? null;
+      if (!editing.current && editingId) {
+        isNew.current = !known.current.has(editingId);
+      }
+      if (editing.current && !editingId) {
+        const done = editing.current;
+        const fresh = isNew.current;
+        const from = connectFrom.current;
+        connectFrom.current = null;
+        setTimeout(() => finishNote(done, fresh, from));
+      }
       editing.current = editingId;
+      known.current = new Set(elements.map((e) => e.id));
 
       const ids = Object.keys(appState.selectedElementIds).filter(
         (k) => appState.selectedElementIds[k],
@@ -303,9 +390,11 @@ function Canvas({ board, store, navigate, signOut }) {
                 .map((n) => n.id),
             ).size;
         setSelection({ notes, ids });
+        if (notes) lastNotes.current = { ids, at: 0 };
+        else if (lastNotes.current && !lastNotes.current.at) lastNotes.current.at = Date.now();
       }
     },
-    [api, commit, schedule],
+    [api, commit, schedule], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   /* ---------- drop a note onto another to connect ---------- */
@@ -323,6 +412,20 @@ function Canvas({ board, store, navigate, signOut }) {
     d.carry.dy = dy;
     api.updateScene({ elements: carry(all, d.snapshot, d.carry.ids, dx, dy), captureUpdate: CaptureUpdateAction.EVENTUALLY });
   };
+  // A dragged connector must stay attached to the notes it carried along.
+  const keepConnected = (d) => {
+    const all = api.getSceneElementsIncludingDeleted();
+    const c = d.carry.connector;
+    const fixed = all.map((e) =>
+      e.id === c.id
+        ? touch(e, { startBinding: c.startBinding, endBinding: c.endBinding })
+        : (e.id === c.startBinding.elementId || e.id === c.endBinding.elementId) && !e.boundElements?.some((b) => b.id === c.id)
+          ? touch(e, { boundElements: [...(e.boundElements ?? []), { id: c.id, type: "arrow" }] })
+          : e,
+    );
+    const map = byId(fixed);
+    api.updateScene({ elements: fixed.map((e) => (e.id === c.id ? routeArrow(e, map) : e)), captureUpdate: CaptureUpdateAction.EVENTUALLY });
+  };
   // The note under `point` you could connect the dragged notes to, if any.
   const dropTarget = (d, point) => {
     const elements = api.getSceneElements();
@@ -336,10 +439,21 @@ function Canvas({ board, store, navigate, signOut }) {
     const t = noteAt(elements, point, d.exclude);
     return t && connectable(t, byId(elements)) ? t : null;
   };
-  const showDrop = (box) => {
+  const showDrop = (box, line) => {
     const el = dropBox.current;
     if (!el) return;
     el.hidden = !box;
+    const svg = preview.current;
+    if (svg) {
+      svg.style.display = line ? "block" : "none";
+      if (line) {
+        const l = svg.firstChild;
+        l.setAttribute("x1", line.x1);
+        l.setAttribute("y1", line.y1);
+        l.setAttribute("x2", line.x2);
+        l.setAttribute("y2", line.y2);
+      }
+    }
     if (box)
       Object.assign(el.style, {
         left: `${box.x - 6}px`,
@@ -376,6 +490,7 @@ function Canvas({ board, store, navigate, signOut }) {
         return;
       if (d.carry?.ids.size) {
         moveCarried(d);
+        if (d.carry.connector) keepConnected(d);
         return;
       }
       const target = dropTarget(
@@ -402,7 +517,7 @@ function Canvas({ board, store, navigate, signOut }) {
         for (const [i, e] of now) if (!ids.has(i)) next.push(e);
         let action;
         for (const from of d.from) {
-          const r = toggleConnection(next, from, target.id, { arrow });
+          const r = toggleConnection(next, from, target.id, { arrow, theme: themeRef.current });
           next = r.elements;
           action = r.action;
         }
@@ -437,6 +552,15 @@ function Canvas({ board, store, navigate, signOut }) {
         const ids = new Set();
         if (shape) for (const i of contentsOf(d.snapshot, shape)) if (!sel.has(i)) ids.add(i);
         d.carry = { shape, ids };
+        // Dragging a connecting line moves both of its notes.
+        const only = sel.size === 1 && snap.get([...sel][0]);
+        if (!shape && only?.type === "arrow" && only.startBinding && only.endBinding) {
+          for (const n of [only.startBinding.elementId, only.endBinding.elementId]) {
+            ids.add(n);
+            for (const b of snap.get(n)?.boundElements ?? []) if (b.type === "text") ids.add(b.id);
+          }
+          d.carry = { shape: only.id, ids, connector: only };
+        }
       }
       if (d.carry.ids.size) return moveCarried(d);
       const t = dropTarget(d, pointer);
@@ -446,7 +570,15 @@ function Canvas({ board, store, navigate, signOut }) {
         appState,
       );
       const z = appState.zoom.value;
-      showDrop({ x: tl.x, y: tl.y, w: t.width * z, h: t.height * z });
+      // "Connect this note… to this one": a dashed line from where the note was to the target.
+      const src = d.snapshot.find((e) => e.id === d.from[0]);
+      const sb = { x: src.x, y: src.y, w: src.width, h: src.height };
+      const tb = { x: t.x, y: t.y, w: t.width, h: t.height };
+      const a = exitPoint(sb, { x: tb.x + tb.w / 2, y: tb.y + tb.h / 2 }, 4);
+      const b = exitPoint(tb, { x: sb.x + sb.w / 2, y: sb.y + sb.h / 2 }, 8);
+      const va = sceneCoordsToViewportCoords({ sceneX: a.x, sceneY: a.y }, appState);
+      const vb = sceneCoordsToViewportCoords({ sceneX: b.x, sceneY: b.y }, appState);
+      showDrop({ x: tl.x, y: tl.y, w: t.width * z, h: t.height * z }, { x1: va.x, y1: va.y, x2: vb.x, y2: vb.y });
     },
     [api], // eslint-disable-line react-hooks/exhaustive-deps
   );
@@ -462,7 +594,7 @@ function Canvas({ board, store, navigate, signOut }) {
       .sort((a, b) => a.box.y - b.box.y || a.box.x - b.box.x);
     let n = 0;
     for (let i = 1; i < us.length; i++) {
-      const r = toggleConnection(els, us[i - 1].key, us[i].key);
+      const r = toggleConnection(els, us[i - 1].key, us[i].key, { theme: themeRef.current });
       if (r.action === "connected") {
         els = r.elements;
         n++;
@@ -501,10 +633,89 @@ function Canvas({ board, store, navigate, signOut }) {
     toast("Disconnected");
   };
 
+  /* ---------- themes, styles, preferences ---------- */
+  const pickTheme = (t) => {
+    bgRef.current = t.bg;
+    themeRef.current = t;
+    setTheme(t);
+    const all = api.getSceneElementsIncludingDeleted();
+    const next = retheme(all, t, touch);
+    api.updateScene({ ...(next !== all ? { elements: next } : {}), appState: themeAppState(t), captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  };
+
+  useEffect(() => {
+    settings
+      .get()
+      .then((d) => {
+        const p = { styles: d.styles ?? [], defaultStyle: d.defaultStyle ?? "plain" };
+        prefsRef.current = p;
+        setPrefs(p);
+      })
+      .catch(() => {});
+  }, []);
+  const savePrefs = (p) => {
+    prefsRef.current = p;
+    setPrefs(p);
+    settings.save(p).catch(() => toast("Couldn't save your styles"));
+  };
+
+  const styleSelection = (style) => {
+    const r = applyStyle(api.getSceneElementsIncludingDeleted(), selectedIds(), style, themeRef.current);
+    commit(r.elements, { measure: r.measure });
+  };
+  const saveStyle = (label) => {
+    const st = styleFromNote(api.getSceneElements(), selectedIds()[0], label);
+    if (st) savePrefs({ ...prefsRef.current, styles: [...prefsRef.current.styles, st] });
+    toast(`Saved “${label}”`);
+  };
+  const replaceText = (find, replacement) => {
+    const r = replaceInNotes(api.getSceneElementsIncludingDeleted(), find, replacement);
+    if (!r.count) return toast("Nothing to replace");
+    commit(r.elements, { measure: true });
+    toast(`Replaced ${r.count}×`);
+  };
+
+  // QuickZoom: hold Z to see the whole board, let go to zoom back in where the mouse is.
+  useEffect(() => {
+    if (!api) return;
+    let saved = null;
+    const mouse = { x: innerWidth / 2, y: innerHeight / 2 };
+    const onMove = (e) => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+    };
+    const typing = (e) => api.getAppState().editingTextElement || /INPUT|TEXTAREA/.test(e.target.tagName) || e.target.isContentEditable;
+    const down = (e) => {
+      if (e.key !== "z" || e.repeat || e.metaKey || e.ctrlKey || e.altKey || saved || typing(e)) return;
+      const st = api.getAppState();
+      saved = { zoom: st.zoom.value };
+      api.scrollToContent(api.getSceneElements(), { fitToContent: true, animate: true, duration: 200 });
+      e.stopPropagation();
+    };
+    const up = (e) => {
+      if (e.key !== "z" || !saved) return;
+      const st = api.getAppState();
+      const p = viewportCoordsToSceneCoords({ clientX: mouse.x, clientY: mouse.y }, st);
+      const z = saved.zoom;
+      saved = null;
+      api.updateScene({
+        appState: { zoom: { value: z }, scrollX: st.width / 2 / z - p.x, scrollY: st.height / 2 / z - p.y },
+      });
+    };
+    addEventListener("pointermove", onMove, { passive: true });
+    addEventListener("keydown", down, true);
+    addEventListener("keyup", up, true);
+    return () => {
+      removeEventListener("pointermove", onMove);
+      removeEventListener("keydown", down, true);
+      removeEventListener("keyup", up, true);
+    };
+  }, [api]);
+
   const actMeasured = (fn) => commit(fn(api.getSceneElementsIncludingDeleted(), selectedIds()), { measure: true });
 
   const background = () => {
-    const r = addBackground(api.getSceneElementsIncludingDeleted(), selectedIds());
+    const r = addBackground(api.getSceneElementsIncludingDeleted(), selectedIds(), themeRef.current);
     if (!r.id) return;
     commit(r.elements);
     api.updateScene({ appState: { selectedElementIds: { [r.id]: true } } });
@@ -609,7 +820,7 @@ function Canvas({ board, store, navigate, signOut }) {
   }[status];
 
   return (
-    <div className="editor">
+    <div className="editor" style={{ "--canvas-ink": theme.ink, "--canvas-line": theme.line }}>
       <Excalidraw
         excalidrawAPI={setApi}
         initialData={initialData}
@@ -661,6 +872,25 @@ function Canvas({ board, store, navigate, signOut }) {
           <MainMenu.DefaultItems.SearchMenu />
           <MainMenu.Separator />
           <MainMenu.Item onSelect={fullScreen}>Full screen</MainMenu.Item>
+          <MainMenu.Item onSelect={() => api.toggleSidebar({ name: "notes" })}>Notes and styles</MainMenu.Item>
+          <MainMenu.ItemCustom className="theme-picker">
+            <span className="theme-label">Paper</span>
+            <span className="theme-swatches">
+              {THEMES.map((t) => (
+                <button
+                  key={t.key}
+                  title={t.label}
+                  aria-label={`${t.label} theme`}
+                  aria-pressed={theme.key === t.key}
+                  className={"theme-swatch" + (theme.key === t.key ? " on" : "")}
+                  style={{ background: t.bg, color: t.ink, borderColor: t.line }}
+                  onClick={() => pickTheme(t)}
+                >
+                  a
+                </button>
+              ))}
+            </span>
+          </MainMenu.ItemCustom>
           <MainMenu.Separator />
           <MainMenu.Item onSelect={exportOutline}>Export outline</MainMenu.Item>
           <MainMenu.Item onSelect={exportScap}>Export Scapple file</MainMenu.Item>
@@ -689,29 +919,63 @@ function Canvas({ board, store, navigate, signOut }) {
               <p className="muted">
                 Hold ⌘ while dropping for an arrow. Drop again to disconnect.
               </p>
-              <p className="muted">Select notes to stack them, style them or put a background behind them.</p>
+              <p className="muted">Select a note, then ⌘-double-click to write a connected one.</p>
+              <p className="muted">Hold Z to see the whole board.</p>
             </div>
           </WelcomeScreen.Center>
         </WelcomeScreen>
+        <NotesPanel
+          api={api}
+          theme={theme}
+          saved={prefs.styles}
+          defaultStyle={prefs.defaultStyle}
+          selectedNotes={selection.notes}
+          onApply={styleSelection}
+          onSaveStyle={saveStyle}
+          onDeleteStyle={(key) =>
+            savePrefs({
+              styles: prefs.styles.filter((x) => x.key !== key),
+              defaultStyle: prefs.defaultStyle === key ? "plain" : prefs.defaultStyle,
+            })
+          }
+          onSetDefault={(key) => {
+            savePrefs({ ...prefs, defaultStyle: key });
+            toast("New notes get this style");
+          }}
+          onReplace={replaceText}
+        />
       </Excalidraw>
 
+      <button className="note-count" onClick={() => api?.toggleSidebar({ name: "notes" })} title="Notes and styles">
+        {noteCount} {noteCount === 1 ? "note" : "notes"}
+      </button>
+
       <div className="drop-target" ref={dropBox} hidden />
+      <svg className="drop-line" ref={preview} aria-hidden="true">
+        <line />
+      </svg>
 
       {selection.notes > 0 && (
         <div className="notebar" role="toolbar" aria-label="Note">
           <div className="swatches">
-            {STYLES.map((s) => (
-              <button
-                key={s.key}
-                title={s.label}
-                aria-label={`Style: ${s.label}`}
-                className={"swatch " + s.key}
-                style={s.fill ? { background: s.fill } : undefined}
-                onClick={() => act((els, ids) => applyStyle(els, ids, s.key))}
-              >
-                {s.key === "plain" ? "Aa" : ""}
-              </button>
-            ))}
+            {STYLES.filter((s) => QUICK.has(s.key)).map((s) => {
+              const fill = s.shape?.fill && theme.fills[s.shape.fill.slice(5)];
+              return (
+                <button
+                  key={s.key}
+                  title={s.label}
+                  aria-label={`Style: ${s.label}`}
+                  className={"swatch " + s.key}
+                  style={fill ? { background: fill } : undefined}
+                  onClick={() => styleSelection(s)}
+                >
+                  {s.key === "plain" ? "Aa" : ""}
+                </button>
+              );
+            })}
+            <button className="more" onClick={() => api.toggleSidebar({ name: "notes", force: true })} title="All styles">
+              …
+            </button>
           </div>
           {selection.notes > 1 && (
             <>

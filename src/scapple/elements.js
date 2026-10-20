@@ -5,8 +5,8 @@ export const randomId = () =>
   Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const randomInt = () => Math.floor(Math.random() * 2 ** 31);
 
-export const PAD = 12; // space between a note's text and its bubble
-export const FONT = 6; // Nunito: clean, bundled with Excalidraw, so notes look the same everywhere
+export const PAD = 8; // space between a note's text and its bubble (Scapple bubbles sit close)
+export const FONT = 9; // Liberation Sans: Helvetica's metrics, like Scapple, and bundled so notes look the same everywhere
 export const INK = "#1e1e1e";
 export const LINE_HEIGHT = 1.25;
 

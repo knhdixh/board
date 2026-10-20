@@ -14,12 +14,15 @@ Every feature on Scapple's feature list, rebuilt on Excalidraw:
 
 | Scapple | Here |
 |---|---|
-| **Write notes anywhere** | Double-click empty space to start a note. Long notes wrap at a note's width once you stop typing. |
-| **Connect notes using drag and drop** | Drag a note onto another and let go: they're joined with a dotted line and the note slides back to where it was. The target is outlined while you hover. Hold ⌘ (Ctrl) for an arrow; drop again to disconnect. The whole gesture is one undo step. |
+| **Write notes anywhere** | Double-click empty space to start a note, in a Helvetica-style font on cream paper. Long notes wrap at a note's width once you stop typing. **⌘-double-click** with a note selected writes a new note that's already connected to it. |
+| **Connect notes using drag and drop** | Drag a note onto another: the target gets a dashed outline and a dashed line runs from your note to it ("connect this note… to this one"). Let go and they're joined with a dotted line while your note slides back. Hold ⌘ (Ctrl) for an arrow; drop again to disconnect. Drag a connecting line to move both its notes. Each gesture is one undo step. |
 | **Completely freeform** | Every note is equal. Connect what you like, or nothing. **Connect** chains selected notes in reading order and **Disconnect** removes the links between them. |
-| **Stack notes in columns** | **Stack** lines selected notes up in a tidy left-aligned column, **Row** lays them out side by side, and **Same width** matches their widths. Connections follow. |
+| **Stack notes in columns** | **Stack** lines selected notes up in a tidy left-aligned column, **Row** lays them out side by side, and **Same width** matches their widths. Stacks are magnetic: type more into a note (or delete one) and the notes under it move down (or up). |
 | **Background shapes to group notes** | **Background** puts a soft shape behind the selected notes. Drag the shape and everything on it comes along, live, as one undo step. Imported Scapple background shapes behave the same way. |
-| **Customise the appearance of notes** | The style bar offers plain, bubble, box or a yellow/blue/green/red/grey fill. Free text is wrapped in a shape when it needs one, and its connections move with it. Excalidraw's own colour, size and font controls still work too. |
+| **Customise the appearance of notes** | The note bar offers quick styles, and the **Notes panel** has them all (plain, bubble, box, dashed, five fills, title, faded). Save any note's look as your own style, and choose which style new notes get. Saved styles follow you between devices. |
+| **Paper colours** | Menu → Paper: cream (the default), white, sage, sky, blueprint or night. Text, lines, fills and background shapes all change to suit, and colours you picked yourself are left alone. Any colour from Excalidraw's own canvas picker works too, with text kept readable. |
+| **Notes panel** | Click the **N notes** counter (or Menu → Notes and styles) for a list of every note: find, click to jump to one, and replace text across the board. |
+| **QuickZoom** | Hold **Z** to see the whole board. Let go to zoom back in where the mouse is. |
 | **Move and arrange notes easily** | Excalidraw's selection, align, distribute, nudge, group and lock, plus the arrangement tools above. |
 | **Full screen mode** | Menu → Full screen hides everything but your notes (Esc to leave). |
 | **Export or print** | Markdown outline (connected notes nest under the note they hang from), Scapple `.scap`, PNG/SVG, `.excalidraw`, or **Print**. |
@@ -49,7 +52,8 @@ cp .env.example .env.local   # fill in your Supabase URL and publishable key
 npm run dev                  # http://localhost:5173
 npm test                     # unit tests (vitest)
 # Browser test in headless Chrome against the real project, while `npm run dev` runs.
-# It creates two throwaway users (an allow-listed owner and a stranger) and deletes them afterwards.
+# It creates two throwaway users (an allow-listed owner and a stranger) and deletes them afterwards,
+# and checks the whole Scapple flow: connecting, stacks, backgrounds, themes, the Notes panel, QuickZoom…
 SB_SECRET=<secret key> node scripts/e2e-cloud.mjs
 ```
 

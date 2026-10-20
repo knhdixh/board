@@ -1,5 +1,6 @@
 // Import Scapple documents (.scap, plain XML) as Excalidraw elements.
-import { INK, LINE_HEIGHT, PAD, boundTextOf, byId, isNote, newArrow, newRect, newText, touch } from "./elements.js";
+import { LINE_HEIGHT, PAD, boundTextOf, byId, isNote, newArrow, newRect, newText, touch } from "./elements.js";
+import { DEFAULT_THEME } from "./themes.js";
 import { routeArrow } from "./connect.js";
 
 const num = (s, d = 0) => {
@@ -51,7 +52,8 @@ function estimateHeight(text, width, fontSize) {
  * note has a border or fill), background shapes behind them, and connections.
  * `parse` is injectable so this runs under node tests too.
  */
-export function importScapple(xml, parse = (s) => new DOMParser().parseFromString(s, "application/xml")) {
+export function importScapple(xml, parse = (s) => new DOMParser().parseFromString(s, "application/xml"), theme = DEFAULT_THEME) {
+  const INK = theme.ink;
   const doc = parse(xml);
   const root = doc.documentElement;
   if (!root || root.tagName !== "ScappleDocument") throw new Error("Not a Scapple file");
@@ -74,8 +76,8 @@ export function importScapple(xml, parse = (s) => new DOMParser().parseFromStrin
         y: pos.y,
         width: num(s.getAttribute("Width"), 200) * PT,
         height: num(s.getAttribute("Height"), 120) * PT,
-        backgroundColor: fill ?? "transparent",
-        strokeColor: weight ? color(border.textContent) ?? INK : "transparent",
+        backgroundColor: fill ?? theme.shape,
+        strokeColor: weight ? color(border.textContent) ?? INK : theme.shapeStroke,
         roundness: (s.getAttribute("Type") ?? "").includes("Rect") && !(s.getAttribute("Type") ?? "").includes("Rounded") ? null : { type: 3 },
         opacity: fill ? 60 : 100,
         customData: { background: true },
@@ -83,7 +85,7 @@ export function importScapple(xml, parse = (s) => new DOMParser().parseFromStrin
     );
     const title = childText(s, "String").trim();
     if (title) {
-      background.push(newText({ x: pos.x + 10, y: pos.y + 8, text: title, originalText: title, fontSize: 14, strokeColor: "#868e96", width: title.length * 8, height: 18 }));
+      background.push(newText({ x: pos.x + 10, y: pos.y + 8, text: title, originalText: title, fontSize: 14, strokeColor: theme.line, width: title.length * 8, height: 18 }));
     }
   }
 
@@ -161,7 +163,7 @@ export function importScapple(xml, parse = (s) => new DOMParser().parseFromStrin
     const directed = ab || ba;
     arrows.push(
       newArrow({
-        strokeColor: directed ? INK : "#868e96",
+        strokeColor: directed ? INK : theme.line,
         strokeStyle: directed ? "solid" : "dotted",
         startArrowhead: ba ? "arrow" : null,
         endArrowhead: ab ? "arrow" : null,
